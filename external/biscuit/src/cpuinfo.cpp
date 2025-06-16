@@ -8,9 +8,11 @@
 #include <biscuit/cpuinfo.hpp>
 
 #if defined(__linux__) && defined(__riscv)
+#include <csignal>
 #include <utility>
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -220,38 +222,363 @@
 #define RISCV_HWPROBE_EXT_ZAWRS (1ULL << 48)
 #endif
 
-#ifndef COMPAT_HWCAP_ISA_I
-#define COMPAT_HWCAP_ISA_I (1U << ('I' - 'A'))
+#ifndef RISCV_HWPROBE_EXT_SUPM
+#define RISCV_HWPROBE_EXT_SUPM (1ULL << 49)
 #endif
 
-#ifndef COMPAT_HWCAP_ISA_M
-#define COMPAT_HWCAP_ISA_M (1U << ('M' - 'A'))
+#ifndef RISCV_HWPROBE_EXT_ZICNTR
+#define RISCV_HWPROBE_EXT_ZICNTR (1ULL << 50)
 #endif
 
-#ifndef COMPAT_HWCAP_ISA_A
-#define COMPAT_HWCAP_ISA_A (1U << ('A' - 'A'))
+#ifndef RISCV_HWPROBE_EXT_ZIHPM
+#define RISCV_HWPROBE_EXT_ZIHPM (1ULL << 51)
 #endif
 
-#ifndef COMPAT_HWCAP_ISA_F
-#define COMPAT_HWCAP_ISA_F (1U << ('F' - 'A'))
+#ifndef RISCV_HWPROBE_EXT_ZFBFMIN
+#define RISCV_HWPROBE_EXT_ZFBFMIN (1ULL << 52)
 #endif
 
-#ifndef COMPAT_HWCAP_ISA_D
-#define COMPAT_HWCAP_ISA_D (1U << ('D' - 'A'))
+#ifndef RISCV_HWPROBE_EXT_ZVFBFMIN
+#define RISCV_HWPROBE_EXT_ZVFBFMIN (1ULL << 53)
 #endif
 
-#ifndef COMPAT_HWCAP_ISA_C
-#define COMPAT_HWCAP_ISA_C (1U << ('C' - 'A'))
+#ifndef RISCV_HWPROBE_EXT_ZVFBFWMA
+#define RISCV_HWPROBE_EXT_ZVFBFWMA (1ULL << 54)
 #endif
 
-#ifndef COMPAT_HWCAP_ISA_V
-#define COMPAT_HWCAP_ISA_V (1U << ('V' - 'A'))
+#ifndef RISCV_HWPROBE_EXT_ZICBOM
+#define RISCV_HWPROBE_EXT_ZICBOM (1ULL << 55)
 #endif
 
-namespace biscuit {
+#ifndef RISCV_HWPROBE_EXT_ZAAMO
+#define RISCV_HWPROBE_EXT_ZAAMO (1ULL << 56)
+#endif
 
-bool CPUInfo::Has(Extension extension) const {
+#ifndef RISCV_HWPROBE_EXT_ZALRSC
+#define RISCV_HWPROBE_EXT_ZALRSC (1ULL << 57)
+#endif
+
+namespace {
+
 #if defined(__linux__) && defined(__riscv)
+bool UseSigillHandler(biscuit::RISCVExtension extension) {
+    using namespace biscuit;
+    switch (extension) {
+    case RISCVExtension::I:
+    case RISCVExtension::M:
+    case RISCVExtension::A:
+    case RISCVExtension::F:
+    case RISCVExtension::D:
+    case RISCVExtension::C:
+    case RISCVExtension::V:
+    case RISCVExtension::Zba:
+    case RISCVExtension::Zbb:
+    case RISCVExtension::Zbs:
+    case RISCVExtension::Zicboz:
+    case RISCVExtension::Zbc:
+    case RISCVExtension::Zbkx:
+    case RISCVExtension::Zknd:
+    case RISCVExtension::Zkne:
+    case RISCVExtension::Zknh:
+    case RISCVExtension::Zksed:
+    case RISCVExtension::Zksh:
+    case RISCVExtension::Zvbb:
+    case RISCVExtension::Zvbc:
+    case RISCVExtension::Zvkb:
+    case RISCVExtension::Zvkg:
+    case RISCVExtension::Zvkned:
+    case RISCVExtension::Zvknha:
+    case RISCVExtension::Zvknhb:
+    case RISCVExtension::Zvksed:
+    case RISCVExtension::Zvksh:
+    case RISCVExtension::Zfh:
+    case RISCVExtension::Zfhmin:
+    case RISCVExtension::Zvfh:
+    case RISCVExtension::Zvfhmin:
+    case RISCVExtension::Zfa:
+    case RISCVExtension::Zacas:
+    case RISCVExtension::Zicond:
+    case RISCVExtension::Zicntr:
+    case RISCVExtension::Zihpm:
+    case RISCVExtension::Zfbfmin:
+    case RISCVExtension::Zicbom: {
+        return true;
+    }
+    default: {
+        return false;
+    }
+    }
+}
+
+void SigillHandler(int, siginfo_t*, void* ctx) {
+    mcontext_t* mctx = &((ucontext_t*)ctx)->uc_mcontext;
+
+    // Since we hit SIGILL, set return value to false
+    mctx->__gregs[REG_A0] = 0;
+
+    // Instead of incrementing the PC, just set it to the return value immediately
+    // after we return from the signal handler. This way we don't need to check if
+    // it's a compressed instruction or not to find out how much to increment PC by.
+    // Additionally, some extensions may require checking multiple instructions.
+    mctx->__gregs[REG_PC] = mctx->__gregs[REG_RA];
+}
+
+void SetEGW(biscuit::Assembler& as, biscuit::SEW eew, uint32_t egs) {
+    using namespace biscuit;
+    uint32_t vlen = CPUInfo().GetVlenb() * 8;
+    uint32_t egw = 0;
+    switch (eew) {
+    case SEW::E32: {
+        egw = 32 * egs;
+        break;
+    }
+    case SEW::E64: {
+        egw = 64 * egs;
+        break;
+    }
+    default: {
+        BISCUIT_ASSERT(false);
+    }
+    }
+
+    // When EGW > VLEN we need to use grouping
+    if (egw > vlen) {
+        // Use the maximum possible grouping as it's simpler
+        // We use registers that are always far apart by 8 (v0, v8, v16, v24)
+        biscuit::Label ok;
+        as.VSETIVLI(t0, egs, eew, LMUL::M8);
+        as.LI(t1, egs);
+        as.BGEU(t0, t1, &ok);
+
+        // If we get here then the new VL < EGS so emit an illegal instruction
+        // to signal we don't have this extension.
+        as.C_UNDEF();
+
+        as.Bind(&ok);
+    } else {
+        as.VSETIVLI(x0, egs, eew);
+    }
+}
+
+void EmitInstruction(biscuit::Assembler& as, biscuit::RISCVExtension extension) {
+    // t0 points to valid memory for instructions that need it
+    using namespace biscuit;
+    switch (extension) {
+    case RISCVExtension::I: {
+        as.ADD(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::M: {
+        as.MUL(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::A: {
+        as.AMOADD_D(Ordering::AQRL, t1, t2, t0);
+        break;
+    }
+    case RISCVExtension::F: {
+        as.FADD_S(ft0, ft1, ft2);
+        break;
+    }
+    case RISCVExtension::D: {
+        as.FADD_D(ft0, ft1, ft2);
+        break;
+    }
+    case RISCVExtension::C: {
+        as.C_ADD(t1, t2);
+        break;
+    }
+    case RISCVExtension::V: {
+        as.VSETIVLI(x0, 1, SEW::E32);
+        as.VADD(v1, v2, v3);
+        break;
+    }
+    case RISCVExtension::Zba: {
+        as.ADDUW(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::Zbb: {
+        as.ANDN(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::Zbs: {
+        as.BCLRI(t1, t2, 0);
+        break;
+    }
+    case RISCVExtension::Zicboz: {
+        as.CBO_ZERO(t0);
+        break;
+    }
+    case RISCVExtension::Zbc: {
+        as.CLMUL(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::Zbkx: {
+        as.XPERM4(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::Zknd: {
+        as.AES64DSM(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::Zkne: {
+        as.AES64ESM(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::Zknh: {
+        as.SHA256SUM0(t1, t2);
+        break;
+    }
+    case RISCVExtension::Zksed: {
+        as.SM4ED(t1, t2, t3, 0);
+        break;
+    }
+    case RISCVExtension::Zksh: {
+        as.SM3P0(t1, t2);
+        break;
+    }
+    case RISCVExtension::Zvbb: {
+        as.VSETIVLI(x0, 1, SEW::E32);
+        as.VCLZ(v1, v2);
+        break;
+    }
+    case RISCVExtension::Zvbc: {
+        SetEGW(as, SEW::E64, 1);
+        as.VCLMUL(v8, v16, v24);
+        break;
+    }
+    case RISCVExtension::Zvkb: {
+        as.VSETIVLI(x0, 1, SEW::E32);
+        as.VANDN(v1, v2, v3);
+        break;
+    }
+    case RISCVExtension::Zvkg: {
+        SetEGW(as, SEW::E32, 4);
+        as.VGHSH(v8, v16, v24);
+        break;
+    }
+    case RISCVExtension::Zvkned: {
+        SetEGW(as, SEW::E32, 4);
+        as.VAESEM_VV(v8, v16);
+        break;
+    }
+    case RISCVExtension::Zvknha: {
+        SetEGW(as, SEW::E32, 4);
+        as.VSHA2MS(v8, v16, v24);
+        break;
+    }
+    case RISCVExtension::Zvknhb: {
+        SetEGW(as, SEW::E64, 4);
+        as.VSHA2MS(v8, v16, v24);
+        break;
+    }
+    case RISCVExtension::Zvksed: {
+        SetEGW(as, SEW::E32, 8);
+        as.VSM4R_VV(v8, v16);
+        break;
+    }
+    case RISCVExtension::Zvksh: {
+        SetEGW(as, SEW::E32, 8);
+        as.VSM3ME(v8, v16, v24);
+        break;
+    }
+    case RISCVExtension::Zfh: {
+        as.FMV_H_X(ft0, x0);
+        as.FMV_H_X(ft1, x0);
+        as.FMV_H_X(ft2, x0);
+        as.FADD_H(ft0, ft1, f2);
+        break;
+    }
+    case RISCVExtension::Zfhmin: {
+        as.FMV_H_X(ft0, x0);
+        break;
+    }
+    case RISCVExtension::Zvfh: {
+        as.VSETIVLI(x0, 1, SEW::E16);
+        as.VMV(v2, x0);
+        as.VMV(v3, x0);
+        as.VFADD(v1, v2, v3);
+        break;
+    }
+    case RISCVExtension::Zvfhmin: {
+        as.VSETIVLI(x0, 1, SEW::E16);
+        as.VMV(v8, x0);
+        as.VFWCVT_F_F(v0, v8);
+        break;
+    }
+    case RISCVExtension::Zfa: {
+        as.FLI_S(ft0, 2.0);
+        break;
+    }
+    case RISCVExtension::Zacas: {
+        as.AMOCAS_D(Ordering::AQRL, t1, t2, t0);
+        break;
+    }
+    case RISCVExtension::Zicond: {
+        as.CZERO_EQZ(t1, t2, t3);
+        break;
+    }
+    case RISCVExtension::Zicntr: {
+        as.RDTIME(t1);
+        break;
+    }
+    case RISCVExtension::Zihpm: {
+        as.CSRR(t1, CSR::HPMCounter3);
+        break;
+    }
+    case RISCVExtension::Zfbfmin: {
+        as.FMV_W_X(ft0, x0);
+        as.FCVT_BF16_S(ft1, ft0);
+        break;
+    }
+    case RISCVExtension::Zicbom: {
+        as.CBO_FLUSH(t0);
+        break;
+    }
+    default: {
+        BISCUIT_ASSERT(false);
+    }
+    }
+}
+
+bool CheckExtensionSigill(biscuit::RISCVExtension extension) {
+    using namespace biscuit;
+
+    struct sigaction sa, old_sa;
+    sa.sa_sigaction = SigillHandler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+
+    int result = sigaction(SIGILL, &sa, &old_sa);
+    BISCUIT_ASSERT(result == 0);
+
+    uint64_t valid_memory[2]; // for extensions that might need to use a memory address
+    auto* memory = static_cast<uint8_t*>(mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    BISCUIT_ASSERT(memory != MAP_FAILED);
+
+    biscuit::Assembler as(memory, 4096);
+    bool (*function)(void*) = (bool (*)(void*))as.GetCursorPointer();
+    as.MV(t0, a0); // instructions that need to access memory will be pointed here
+    as.LI(a0, 1);  // return true unless if we hit SIGILL
+    EmitInstruction(as, extension);
+    as.RET();
+
+    result = mprotect(memory, 4096, PROT_READ | PROT_EXEC);
+    BISCUIT_ASSERT(result == 0);
+
+    bool has_extension = function(&valid_memory);
+
+    result = munmap(memory, 4096);
+    BISCUIT_ASSERT(result == 0);
+
+    result = sigaction(SIGILL, &old_sa, nullptr);
+    BISCUIT_ASSERT(result == 0);
+
+    return has_extension;
+}
+
+bool CheckExtensionSyscall(biscuit::RISCVExtension extension) {
+    using namespace biscuit;
     static const auto [ima, features0] = []() {
 #ifdef SYS_riscv_hwprobe
         riscv_hwprobe pairs[] = {
@@ -259,45 +586,15 @@ bool CPUInfo::Has(Extension extension) const {
             {RISCV_HWPROBE_KEY_IMA_EXT_0, 0},
         };
 
-        long result = syscall(SYS_riscv_hwprobe, pairs, std::size(pairs), 0, nullptr, 0);
+        syscall(SYS_riscv_hwprobe, pairs, std::size(pairs), 0, nullptr, 0);
         uint64_t ima = pairs[0].value;
         uint64_t features0 = pairs[1].value;
 #else
-        long result = -1;
         uint64_t ima = 0;
         uint64_t features0 = 0;
 #endif
-
-        if (result < 0) {
-            // Older kernel versions don't support this syscall.
-            // Fallback to an older implementation
-            static const uint64_t features =
-                getauxval(AT_HWCAP) & (COMPAT_HWCAP_ISA_I | COMPAT_HWCAP_ISA_M | COMPAT_HWCAP_ISA_A | COMPAT_HWCAP_ISA_F | COMPAT_HWCAP_ISA_D |
-                                       COMPAT_HWCAP_ISA_C | COMPAT_HWCAP_ISA_V);
-
-            if ((features & (COMPAT_HWCAP_ISA_I | COMPAT_HWCAP_ISA_M | COMPAT_HWCAP_ISA_A)) != 0) {
-                ima = RISCV_HWPROBE_BASE_BEHAVIOR_IMA;
-            }
-
-            if ((features & (COMPAT_HWCAP_ISA_F | COMPAT_HWCAP_ISA_D)) != 0) {
-                features0 |= RISCV_HWPROBE_IMA_FD;
-            }
-
-            if ((features & COMPAT_HWCAP_ISA_C) != 0) {
-                features0 |= RISCV_HWPROBE_IMA_C;
-            }
-
-            if ((features & COMPAT_HWCAP_ISA_V) != 0) {
-                features0 |= RISCV_HWPROBE_IMA_V;
-            }
-        }
-
         return std::make_pair(ima, features0);
     }();
-#else
-    static const uint64_t ima = 0;
-    static const uint64_t features0 = 0;
-#endif
 
     switch (extension) {
     case RISCVExtension::I:
@@ -404,9 +701,44 @@ bool CPUInfo::Has(Extension extension) const {
         return (features0 & RISCV_HWPROBE_EXT_ZCMOP) != 0;
     case RISCVExtension::Zawrs:
         return (features0 & RISCV_HWPROBE_EXT_ZAWRS) != 0;
+    case RISCVExtension::Supm:
+        return (features0 & RISCV_HWPROBE_EXT_SUPM) != 0;
+    case RISCVExtension::Zicntr:
+        return (features0 & RISCV_HWPROBE_EXT_ZICNTR) != 0;
+    case RISCVExtension::Zihpm:
+        return (features0 & RISCV_HWPROBE_EXT_ZIHPM) != 0;
+    case RISCVExtension::Zfbfmin:
+        return (features0 & RISCV_HWPROBE_EXT_ZFBFMIN) != 0;
+    case RISCVExtension::Zvfbfmin:
+        return (features0 & RISCV_HWPROBE_EXT_ZVFBFMIN) != 0;
+    case RISCVExtension::Zvfbfwma:
+        return (features0 & RISCV_HWPROBE_EXT_ZVFBFWMA) != 0;
+    case RISCVExtension::Zicbom:
+        return (features0 & RISCV_HWPROBE_EXT_ZICBOM) != 0;
+    case RISCVExtension::Zaamo:
+        return (features0 & RISCV_HWPROBE_EXT_ZAAMO) != 0;
+    case RISCVExtension::Zalrsc:
+        return (features0 & RISCV_HWPROBE_EXT_ZALRSC) != 0;
     }
 
     return false;
+}
+#endif
+
+} // namespace
+
+namespace biscuit {
+
+bool CPUInfo::Has([[maybe_unused]] RISCVExtension extension) const {
+#if defined(__riscv) && defined(__linux__)
+    if (UseSigillHandler(extension)) {
+        return CheckExtensionSigill(extension);
+    } else {
+        return CheckExtensionSyscall(extension);
+    }
+#else
+    return false;
+#endif
 }
 
 uint32_t CPUInfo::GetVlenb() const {
