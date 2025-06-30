@@ -23,7 +23,6 @@
 #include "felix86/common/script.hpp"
 #include "felix86/common/state.hpp"
 #include "felix86/common/strace.hpp"
-#include "felix86/common/symlink.hpp"
 #include "felix86/common/types.hpp"
 #include "felix86/common/utility.hpp"
 #include "felix86/emulator.hpp"
@@ -1320,6 +1319,10 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
             Script script(path);
             const std::string& args = script.GetArgs();
             script_interpreter = script.GetInterpreter();
+            NullablePath npath = Filesystem::resolve(script_interpreter.c_str(), true);
+            ASSERT(npath.get_str());
+            ASSERT(npath.get_str()[0] == '/');
+            script_interpreter = npath.get_str();
             script_args = split_string(args, ' ');
             argv.push_back(script_interpreter.c_str());
             for (auto it = script_args.begin(); it < script_args.end(); it++) {

@@ -16,7 +16,6 @@
 #include "felix86/common/log.hpp"
 #include "felix86/common/perf.hpp"
 #include "felix86/common/state.hpp"
-#include "felix86/common/symlink.hpp"
 #include "felix86/hle/filesystem.hpp"
 #include "felix86/hle/mmap.hpp"
 #include "felix86/mounter.h"
@@ -48,6 +47,7 @@ StartParameters g_params{};
 int g_linux_major = 0;
 int g_linux_minor = 0;
 bool g_no_riscv_v_state{};
+std::filesystem::path g_executable_path_absolute{};
 
 // g_output_fd should be replaced upon connecting to the server, however if an error occurs before then we should at least log it
 int g_output_fd = STDERR_FILENO;
@@ -324,7 +324,8 @@ void initialize_globals() {
                 std::filesystem::path path = buffer;
                 if (std::filesystem::exists(path)) {
                     // Relocate executable path
-                    std::string new_executable_path = g_params.executable_path;
+                    std::string new_executable_path =
+                        !g_params.executable_path.empty() ? std::filesystem::absolute(g_params.executable_path) : g_params.executable_path;
                     Filesystem::removeRootfsPrefix(new_executable_path);
                     new_executable_path = path / std::filesystem::path(new_executable_path).relative_path();
                     g_params.executable_path = new_executable_path;
@@ -361,6 +362,7 @@ void initialize_globals() {
         ERROR("You selected the system root as the rootfs path, which is wrong");
     }
 
+    ASSERT_MSG(g_config.rootfs_path.string().back() != '/', "Rootfs path should not end in '/'");
     ASSERT(std::filesystem::exists(g_config.rootfs_path));
     ASSERT(std::filesystem::is_directory(g_config.rootfs_path));
     g_rootfs_fd = open(g_config.rootfs_path.c_str(), O_DIRECTORY);

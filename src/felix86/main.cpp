@@ -14,7 +14,6 @@
 #include "felix86/common/info.hpp"
 #include "felix86/common/log.hpp"
 #include "felix86/common/sudo.hpp"
-#include "felix86/common/symlink.hpp"
 #include "felix86/common/utility.hpp"
 #include "felix86/emulator.hpp"
 #include "felix86/hle/signals.hpp"
@@ -601,6 +600,16 @@ int main(int argc, char* argv[]) {
             ERROR("Executable path is not a regular file");
             return 1;
         }
+    }
+
+    if (g_params.executable_path.is_absolute()) {
+        g_executable_path_absolute = g_params.executable_path.lexically_normal();
+    } else {
+        NullablePath npath = Filesystem::resolve(AT_FDCWD, g_params.executable_path.c_str(), true).second;
+        ASSERT_MSG(npath.get_str(), "Failed to resolve %s", g_params.executable_path.c_str());
+        ASSERT_MSG(npath.get_str()[0] == '/', "Resolved path is not absolute? %s", npath.get_str());
+        g_executable_path_absolute = npath.get_str();
+        g_executable_path_absolute = g_executable_path_absolute.lexically_normal();
     }
 
     if (!g_config.binfmt_misc_installed && !g_execve_process && check_if_privileged_executable(g_params.executable_path)) {
