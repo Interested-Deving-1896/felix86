@@ -868,11 +868,52 @@ FAST_HANDLE(OR) {
 
     bool writeback = true;
     bool needs_atomic = operands[0].type == ZYDIS_OPERAND_TYPE_MEMORY && (instruction.attributes & ZYDIS_ATTRIB_HAS_LOCK);
-    bool too_small_for_atomic = operands[0].size == 8 || operands[0].size == 16;
-    if (needs_atomic && !too_small_for_atomic) {
+    if (needs_atomic) {
         biscuit::GPR address = rec.lea(&operands[0]);
         dst = rec.scratch();
         switch (operands[0].size) {
+        case 8: {
+            if (Extensions::Zabha) {
+                as.AMOOR_B(Ordering::AQRL, dst, src, address);
+            } else {
+                biscuit::GPR masked_address = rec.scratch();
+                biscuit::GPR shifted_address = rec.scratch();
+                biscuit::GPR shifted_src = rec.scratch();
+
+                as.ANDI(masked_address, address, -4);
+                as.SLLI(shifted_address, address, 3);
+                as.SLLW(shifted_src, src, shifted_address);
+                as.AMOOR_W(Ordering::AQRL, dst, shifted_src, masked_address);
+                as.SRLW(dst, dst, shifted_address);
+                rec.zext(dst, dst, X86_SIZE_BYTE);
+
+                rec.popScratch();
+                rec.popScratch();
+                rec.popScratch();
+            }
+            break;
+        }
+        case 16: {
+            if (Extensions::Zabha) {
+                as.AMOOR_H(Ordering::AQRL, dst, src, address);
+            } else {
+                biscuit::GPR masked_address = rec.scratch();
+                biscuit::GPR shifted_address = rec.scratch();
+                biscuit::GPR shifted_src = rec.scratch();
+
+                as.ANDI(masked_address, address, -4);
+                as.SLLI(shifted_address, address, 3);
+                as.SLLW(shifted_src, src, shifted_address);
+                as.AMOOR_W(Ordering::AQRL, dst, shifted_src, masked_address);
+                as.SRLW(dst, dst, shifted_address);
+                rec.zext(dst, dst, X86_SIZE_WORD);
+
+                rec.popScratch();
+                rec.popScratch();
+                rec.popScratch();
+            }
+            break;
+        }
         case 32: {
             as.AMOOR_W(Ordering::AQRL, dst, src, address);
             break;
