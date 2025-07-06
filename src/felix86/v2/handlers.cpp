@@ -5865,6 +5865,119 @@ FAST_HANDLE(BSR) {
     as.Bind(&end);
 }
 
+void LZCNT(Recompiler& rec, Assembler& as, biscuit::GPR result, biscuit::GPR src, int size) {
+    if (Extensions::B) {
+        if (size == 64) {
+            as.CLZ(result, src);
+        } else if (size == 32) {
+            as.CLZW(result, src);
+        } else if (size == 16) {
+            as.CLZW(result, src);
+            as.ADDI(result, result, -16);
+        } else {
+            UNREACHABLE();
+        }
+    } else {
+        biscuit::GPR temp = rec.scratch();
+        biscuit::GPR bit = rec.scratch();
+        as.LI(result, 0);
+        as.LI(temp, size - 1);
+
+        biscuit::Label loop, end;
+        as.Bind(&loop);
+        as.BLT(temp, x0, &end);
+        as.SRL(bit, src, temp);
+        as.ANDI(bit, bit, 1);
+        as.BNE(bit, x0, &end);
+        as.ADDI(temp, temp, -1);
+        as.ADDI(result, result, 1);
+        as.J(&loop);
+        as.Bind(&end);
+    }
+}
+
+FAST_HANDLE(LZCNT) {
+    biscuit::GPR src = rec.getGPR(&operands[1]);
+    biscuit::GPR result = rec.scratch();
+
+    // perform the count (stub above handles both hw and sw paths)
+    LZCNT(rec, as, result, src, instruction.operand_width);
+
+    // write back the destination register
+    rec.setGPR(&operands[0], result);
+
+    if (rec.shouldEmitFlag(rip, X86_REF_ZF)) {
+        biscuit::GPR zf = rec.flag(X86_REF_ZF);
+        as.SEQZ(zf, result);
+    }
+
+    if (rec.shouldEmitFlag(rip, X86_REF_CF)) {
+        biscuit::GPR cf = rec.flag(X86_REF_CF);
+        biscuit::GPR tmp = rec.scratch();
+        as.ADDI(tmp, result, -instruction.operand_width);
+        as.SEQZ(cf, tmp);
+    }
+}
+
+void POPCNT(Recompiler& rec, Assembler& as, biscuit::GPR result, biscuit::GPR src, int size) {
+    if (Extensions::B) {
+        // hardware CPOP (population count)
+        if (size == 64) {
+            as.CPOP(result, src);
+        } else if (size == 32) {
+            as.CPOPW(result, src);
+        } else if (size == 16) {
+            as.CPOPW(result, src);
+        } else {
+            UNREACHABLE();
+        }
+    } else {
+        biscuit::GPR tmp = rec.scratch();
+        biscuit::GPR tmp2 = rec.scratch();
+        as.MV(tmp, src);  // high bits are already masked from getGPR
+        as.LI(result, 0); // count = 0
+        Label loop, done;
+        as.Bind(&loop);
+        as.BEQZ(tmp, &done);        // if tmp == 0 break
+        as.ADDI(result, result, 1); // count++
+        as.ADDI(tmp2, tmp, -1);
+        as.AND(tmp, tmp, tmp2); // tmp &= (tmp - 1) (clears lsb)
+        as.J(&loop);
+        as.Bind(&done);
+        rec.popScratch();
+    }
+}
+
+FAST_HANDLE(POPCNT) {
+    biscuit::GPR src = rec.getGPR(&operands[1]);
+    biscuit::GPR result = rec.scratch();
+
+    POPCNT(rec, as, result, src, instruction.operand_width);
+
+    rec.setGPR(&operands[0], result);
+
+    if (rec.shouldEmitFlag(rip, X86_REF_ZF)) {
+        biscuit::GPR zf = rec.flag(X86_REF_ZF);
+        as.SEQZ(zf, result);
+    }
+
+    if (rec.shouldEmitFlag(rip, X86_REF_OF)) {
+        rec.clearFlag(X86_REF_OF);
+    }
+    if (rec.shouldEmitFlag(rip, X86_REF_SF)) {
+        rec.clearFlag(X86_REF_SF);
+    }
+    if (rec.shouldEmitFlag(rip, X86_REF_AF)) {
+        rec.clearFlag(X86_REF_AF);
+    }
+    if (rec.shouldEmitFlag(rip, X86_REF_CF)) {
+        rec.clearFlag(X86_REF_CF);
+    }
+    if (rec.shouldEmitFlag(rip, X86_REF_PF)) {
+        rec.clearFlag(X86_REF_PF);
+    }
+}
+
 void REV8(Recompiler& rec, Assembler& as, biscuit::GPR result, biscuit::GPR src) {
     if (Extensions::B) {
         as.REV8(result, src);
