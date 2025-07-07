@@ -27,6 +27,7 @@
 #include "felix86/common/utility.hpp"
 #include "felix86/emulator.hpp"
 #include "felix86/hle/brk.hpp"
+#include "felix86/hle/fd.hpp"
 #include "felix86/hle/filesystem.hpp"
 #include "felix86/hle/guest_types.hpp"
 #include "felix86/hle/ioctl32.hpp"
@@ -252,11 +253,11 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
         break;
     }
     case felix86_riscv64_close: {
-        result = SYSCALL(close, arg1, arg2, arg3, arg4, arg5, arg6);
+        result = FD::close(arg1);
         break;
     }
     case felix86_riscv64_close_range: {
-        result = SYSCALL(close_range, arg1, arg2, arg3);
+        result = FD::close_range(arg1, arg2, arg3);
         break;
     }
     case felix86_riscv64_copy_file_range: {
@@ -584,6 +585,9 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
     case felix86_riscv64_exit_group: {
         state->exit_reason = EXIT_REASON_EXIT_GROUP_SYSCALL;
         state->exit_code = arg1;
+        if (g_config.calltrace_on_exit) {
+            dump_states();
+        }
         Emulator::ExitDispatcher(frame);
         UNREACHABLE();
         break;
@@ -915,6 +919,9 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
     case felix86_riscv64_exit: {
         state->exit_reason = ExitReason::EXIT_REASON_EXIT_SYSCALL;
         state->exit_code = arg1;
+        if (g_config.calltrace_on_exit) {
+            dump_states();
+        }
         Emulator::ExitDispatcher(frame);
         UNREACHABLE();
         break;
@@ -1267,16 +1274,15 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
         }
 
         SignalGuard guard;
-        NullablePath npath = Filesystem::resolve((char*)arg1, true);
-        ASSERT(npath.get_str());
-        std::filesystem::path path = npath.get_str();
+        FdPath fd_path = Filesystem::resolve((char*)arg1, true);
 
-        if (!std::filesystem::exists(path)) {
-            WARN("Execve couldn't find path: %s", path.c_str());
+        if (!fd_path.path() || !std::filesystem::exists(fd_path.full_path())) {
+            WARN("Execve couldn't find path: %s", arg1);
             result = -ENOENT;
             break;
         }
 
+        std::filesystem::path path = fd_path.full_path();
         if (!std::filesystem::is_regular_file(path)) {
             WARN("Not regular file during execve: %s", path.c_str());
             result = -ENOENT;
@@ -1319,10 +1325,10 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
             Script script(path);
             const std::string& args = script.GetArgs();
             script_interpreter = script.GetInterpreter();
-            NullablePath npath = Filesystem::resolve(script_interpreter.c_str(), true);
-            ASSERT(npath.get_str());
-            ASSERT(npath.get_str()[0] == '/');
-            script_interpreter = npath.get_str();
+            FdPath interpreter_fd_path = Filesystem::resolve(script_interpreter.c_str(), true);
+            ASSERT(interpreter_fd_path.full_path());
+            ASSERT(interpreter_fd_path.full_path()[0] == '/');
+            script_interpreter = interpreter_fd_path.full_path();
             script_args = split_string(args, ' ');
             argv.push_back(script_interpreter.c_str());
             for (auto it = script_args.begin(); it < script_args.end(); it++) {

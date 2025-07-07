@@ -16,6 +16,7 @@
 #include "felix86/common/log.hpp"
 #include "felix86/common/perf.hpp"
 #include "felix86/common/state.hpp"
+#include "felix86/hle/fd.hpp"
 #include "felix86/hle/filesystem.hpp"
 #include "felix86/hle/mmap.hpp"
 #include "felix86/mounter.h"
@@ -364,8 +365,9 @@ void initialize_globals() {
     ASSERT_MSG(g_config.rootfs_path.string().back() != '/', "Rootfs path should not end in '/'");
     ASSERT(std::filesystem::exists(g_config.rootfs_path));
     ASSERT(std::filesystem::is_directory(g_config.rootfs_path));
-    g_rootfs_fd = open(g_config.rootfs_path.c_str(), O_DIRECTORY);
+    g_rootfs_fd = open(g_config.rootfs_path.c_str(), O_PATH | O_DIRECTORY);
     ASSERT_MSG(g_rootfs_fd > 0, "Failed to open rootfs directory");
+    FD::protect(g_rootfs_fd);
 
     const char* env_file = getenv("FELIX86_ENV_FILE");
     if (env_file) {
@@ -386,6 +388,14 @@ void initialize_globals() {
     g_config.gdb = is_running_under_gdb();
     if (g_config.gdb) {
         LOG("Emitting symbols for " ANSI_BOLD "gdb" ANSI_COLOR_RESET "!");
+    }
+
+    if (g_config.calltrace_on_exit) {
+        g_config.calltrace = true;
+    }
+
+    if (g_config.single_step) {
+        g_config.link = false;
     }
 
     std::string extensions = get_extensions();
