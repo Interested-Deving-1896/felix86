@@ -934,6 +934,8 @@ FAST_HANDLE(OR) {
         }
         case 32: {
             as.AMOOR_W(Ordering::AQRL, dst, src, address);
+            // TODO: probably remove this and other zexts in OR, as dst value doesn't matter in flag calculation and result gets sign extended
+            rec.zext(dst, dst, X86_SIZE_DWORD);
             rec.setLockHandled();
             break;
         }
@@ -1180,6 +1182,7 @@ FAST_HANDLE(AND) {
         }
         case 32: {
             as.AMOAND_W(Ordering::AQRL, dst, src, address);
+            // src is zexted so AND will remove upper bits for flag calc
             rec.setLockHandled();
             break;
         }
@@ -2261,6 +2264,7 @@ FAST_HANDLE(INC) {
         as.LI(one, 1);
         if (operands[0].size == 32) {
             as.AMOADD_W(Ordering::AQRL, dst, one, address);
+            rec.zext(dst, dst, X86_SIZE_DWORD);
             rec.setLockHandled();
         } else if (operands[0].size == 64) {
             as.AMOADD_D(Ordering::AQRL, dst, one, address);
@@ -2322,6 +2326,7 @@ FAST_HANDLE(DEC) {
         as.LI(one, -1);
         if (operands[0].size == 32) {
             as.AMOADD_W(Ordering::AQRL, dst, one, address);
+            rec.zext(dst, dst, X86_SIZE_DWORD);
             rec.setLockHandled();
         } else if (operands[0].size == 64) {
             as.AMOADD_D(Ordering::AQRL, dst, one, address);
