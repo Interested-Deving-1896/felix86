@@ -1,3 +1,4 @@
+#include <cstring>
 #include <set>
 #include <fcntl.h>
 #include "felix86/common/log.hpp"
@@ -8,7 +9,6 @@ std::set<int> g_protected_fds{};
 void FD::protect(int fd) {
     ASSERT(fd > 2);
 
-    auto guard = g_process_globals.states_lock.lock();
     g_protected_fds.insert(fd);
 
     // Important: If a process sharing a file descriptor table calls execve(2), its file descriptor table is duplicated (unshared)
@@ -20,7 +20,6 @@ void FD::protect(int fd) {
 }
 
 void FD::unprotectAndClose(int fd) {
-    auto guard = g_process_globals.states_lock.lock();
     ASSERT(g_protected_fds.contains(fd));
     g_protected_fds.erase(fd);
     ASSERT_MSG(::close(fd) == 0, "Failed to close our protected fd: %d", fd);
@@ -69,4 +68,55 @@ int FD::close_range(u32 start, u32 end, int flags) {
     } else {
         return 0;
     }
+}
+
+int FD::dup2(int old_fd, int new_fd) {
+    {
+        auto guard = g_process_globals.states_lock.lock();
+        for (u32 protected_fd : g_protected_fds) {
+            if (old_fd == (int)protected_fd) {
+                WARN("dup2 with old_fd == protected FD: %d", protected_fd);
+            }
+            if (new_fd == (int)protected_fd) {
+                WARN("Program tried to trample our protected FD with dup2, returning EBADF");
+                return -EBADF;
+            }
+        }
+    }
+    return ::dup2(old_fd, new_fd);
+}
+
+int FD::dup3(int old_fd, int new_fd, int flags) {
+    {
+        auto guard = g_process_globals.states_lock.lock();
+        for (u32 protected_fd : g_protected_fds) {
+            if (old_fd == (int)protected_fd) {
+                WARN("dup2 with old_fd == protected FD: %d", protected_fd);
+            }
+            if (new_fd == (int)protected_fd) {
+                WARN("Program tried to trample our protected FD with dup3, returning EBADF");
+                return -EBADF;
+            }
+        }
+    }
+    return ::dup3(old_fd, new_fd, flags);
+}
+
+int FD::moveToHighNumber(int fd) {
+    // rand() so that it has a higher likelyhood of succeeding first try
+    int high_fd = 512 + rand() % 64;
+    int tries = 50;
+    while (tries-- > 0) {
+        int result = fcntl(high_fd, F_GETFD);
+        if (result != 0) {
+            // We can use this FD
+            int new_fd = ::dup2(fd, high_fd);
+            ASSERT_MSG(new_fd > 0, "Failed to duplicate fd %d to %d with error %s", fd, high_fd, strerror(errno));
+            return new_fd;
+        }
+        high_fd++;
+    }
+
+    ERROR("Failed to find available FD to duplicate %d", fd);
+    return -1;
 }
