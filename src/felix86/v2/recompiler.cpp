@@ -14,21 +14,19 @@
 #include "felix86/v2/recompiler.hpp"
 #include "fmt/format.h"
 
-constexpr static u64 code_cache_size = 64 * 1024 * 1024;
+// TODO: benchmark to find best arrangement?
+constexpr static u64 code_cache_sizes[] = {
+    4 * 1024 * 1024,
+    16 * 1024 * 1024,
+    32 * 1024 * 1024,
+    64 * 1042 * 1024,
+};
+
+constexpr static u64 code_cache_sizes_count = std::size(code_cache_sizes);
+constexpr static u64 max_code_cache_size = code_cache_sizes[code_cache_sizes_count - 1];
 
 // TODO: move to header file
 BlockMetadata* get_block_metadata(ThreadState* state, u64 host_pc);
-
-static u8* allocateCodeCache() {
-    u8 prot = PROT_READ | PROT_WRITE | PROT_EXEC;
-    u8 flags = MAP_PRIVATE | MAP_ANONYMOUS;
-
-    return (u8*)mmap(nullptr, code_cache_size, prot, flags, -1, 0);
-}
-
-static void deallocateCodeCache(u8* memory) {
-    munmap(memory, code_cache_size);
-}
 
 static void incorrect_magic(void* sp) {
     ERROR("Incorrect magic in frame (sp: %lx)", sp);
@@ -59,7 +57,19 @@ static bool flag_passthrough(ZydisMnemonic mnemonic, x86_ref_e flag) {
     }
 }
 
-Recompiler::Recompiler() : code_cache(allocateCodeCache()), as(code_cache, code_cache_size) {
+static u8* allocateCodeCache(size_t size) {
+    void* address = ::mmap(nullptr, max_code_cache_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    ASSERT_MSG(address != MAP_FAILED, "Failed to reserve code cache for thread %d?", gettid());
+    u8* first_chunk = (u8*)::mmap(address, code_cache_sizes[0], PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    ASSERT(first_chunk == address);
+    return first_chunk;
+}
+
+static void deallocateCodeCache(void* address) {
+    munmap(address, max_code_cache_size);
+}
+
+Recompiler::Recompiler() : as(allocateCodeCache(code_cache_sizes[0]), max_code_cache_size) {
     emitNecessaryStuff();
 
     ZydisMachineMode mode = g_mode32 ? ZYDIS_MACHINE_MODE_LONG_COMPAT_32 : ZYDIS_MACHINE_MODE_LONG_64;
@@ -79,7 +89,7 @@ Recompiler::Recompiler() : code_cache(allocateCodeCache()), as(code_cache, code_
     }
 
     if (g_config.perf_global) {
-        g_process_globals.perf->addToFile((u64)start_of_code_cache, code_cache_size - ((u64)start_of_code_cache - (u64)code_cache),
+        g_process_globals.perf->addToFile((u64)start_of_code_cache, max_code_cache_size - ((u64)start_of_code_cache - (u64)as.GetBufferPointer(0)),
                                           "felix86 code cache");
     }
 
@@ -90,7 +100,7 @@ Recompiler::Recompiler() : code_cache(allocateCodeCache()), as(code_cache, code_
 }
 
 Recompiler::~Recompiler() {
-    deallocateCodeCache(code_cache);
+    deallocateCodeCache(as.GetBufferPointer(0));
 }
 
 void Recompiler::emitNecessaryStuff() {
@@ -286,20 +296,36 @@ void Recompiler::invalidateAt(ThreadState* state, u8* address_of_block, u8* link
 }
 
 void Recompiler::clearCodeCache(ThreadState* state) {
-    WARN("Clearing cache on thread %u", gettid());
-    as.RewindBuffer();
-    auto guard = page_map_lock.lock();
-    block_metadata.clear();
-    host_pc_map.clear();
-    page_map.clear();
-    std::fill(std::begin(address_cache), std::end(address_cache), AddressCacheEntry{});
+    if (code_cache_size_index < code_cache_sizes_count) {
+        // Allocate more of our reserved buffer
+        u8* old_mem = as.GetBufferPointer(0);
+        u64 old_size = code_cache_sizes[code_cache_size_index];
+        u8* past_end = old_mem + old_size;
+        ASSERT(!((u64)past_end & 0xFFF));
+        code_cache_size_index++;
+        u64 new_size = code_cache_sizes[code_cache_size_index];
+        u64 size_difference = new_size - old_size;
 
-    emitNecessaryStuff();
+        void* address = ::mmap(past_end, size_difference, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        ASSERT(address == past_end);
+    } else {
+        WARN("Clearing cache on thread %u", gettid());
+        auto guard = page_map_lock.lock();
+        block_metadata.clear();
+        host_pc_map.clear();
+        page_map.clear();
+        std::fill(std::begin(address_cache), std::end(address_cache), AddressCacheEntry{});
+
+        as.RewindBuffer();
+        emitNecessaryStuff();
+    }
 }
 
 u64 Recompiler::compile(ThreadState* state, u64 rip) {
-    size_t remaining_size = code_cache_size - as.GetCodeBuffer().GetCursorOffset();
-    if (remaining_size < 100'000) { // less than ~100KB left, clear cache
+    u64 size = code_cache_sizes[code_cache_size_index];
+    size_t remaining_size = size - as.GetCodeBuffer().GetCursorOffset();
+    // TODO: restrict max x86 instruction count per block
+    if (remaining_size < 200'000) { // less than ~200KB left, clear cache
         clearCodeCache(state);
     }
 

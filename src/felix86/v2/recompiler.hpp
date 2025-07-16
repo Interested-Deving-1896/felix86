@@ -645,7 +645,6 @@ private:
 
     static void invalidateAt(ThreadState* state, u8* address_of_block, u8* linked_block);
 
-    u8* code_cache{};
     biscuit::Assembler as{};
     ZydisDecoder decoder{};
 
@@ -707,6 +706,8 @@ private:
     std::deque<u64> calltrace{};
 
     FlagMode flag_mode = FlagMode::Default;
+
+    u64 code_cache_size_index = 0;
 
     constexpr static std::array scratch_gprs = {
         x1, x6, x28, x29, x7, x30, x31,
