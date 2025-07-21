@@ -3643,31 +3643,46 @@ FAST_HANDLE(UNPCKHPS) {
 }
 
 FAST_HANDLE(UNPCKLPD) {
-    biscuit::Vec scratch = rec.scratchVec();
-    biscuit::Vec result = rec.scratchVec();
-    biscuit::Vec src1 = rec.getVec(&operands[0]);
-    biscuit::Vec src2 = rec.getVec(&operands[1]);
+    biscuit::Vec dst = rec.getVec(&operands[0]);
 
     rec.setVectorState(SEW::E64, 2);
-    as.VSLIDEUP(scratch, src2, 1);
-    as.VMV(v0, 0b10);
-    as.VMERGE(result, src1, scratch);
+    if (operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+        biscuit::Vec src = rec.getVec(&operands[1]);
+        if (dst == src) {
+            src = rec.scratchVec();
+            as.VMV(src, dst);
+        }
+        as.VSLIDEUP(dst, src, 1);
+    } else {
+        biscuit::GPR address = rec.lea(&operands[1], false);
+        biscuit::Vec index = rec.scratchVec();
+        as.VMV(v0, 0b10);
+        as.VXOR(index, index, index);
+        as.VLUXEI64(dst, address, index, VecMask::Yes);
+    }
 
-    rec.setVec(&operands[0], result);
+    rec.setVec(&operands[0], dst);
 }
 
 FAST_HANDLE(UNPCKHPD) {
     biscuit::Vec scratch = rec.scratchVec();
     biscuit::Vec result = rec.scratchVec();
-    biscuit::Vec src1 = rec.getVec(&operands[0]);
-    biscuit::Vec src2 = rec.getVec(&operands[1]);
+    biscuit::Vec dst = rec.getVec(&operands[0]);
 
     rec.setVectorState(SEW::E64, 2);
-    as.VSLIDEDOWN(scratch, src1, 1);
-    as.VMV(v0, 0b10);
-    as.VMERGE(result, scratch, src2);
-
-    rec.setVec(&operands[0], result);
+    if (operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+        biscuit::Vec src = rec.getVec(&operands[1]);
+        as.VSLIDEDOWN(scratch, dst, 1);
+        as.VMV(v0, 0b10);
+        as.VMERGE(result, scratch, src);
+        rec.setVec(&operands[0], result);
+    } else {
+        biscuit::GPR address = rec.lea(&operands[1], false);
+        as.VMV(v0, 0b10);
+        as.VSLIDEDOWN(dst, dst, 1);
+        as.VLE64(dst, address, VecMask::Yes);
+        rec.setVec(&operands[0], dst);
+    }
 }
 
 FAST_HANDLE(VECTOR_MOV) {
