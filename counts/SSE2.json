@@ -2829,5 +2829,46 @@
             "ADDI            t0, ra, 0x0(0)"
         ],
         "disassembly": "movmskpd rax, xmm2"
+    },
+    "660ff4dc": {
+        "instruction_count": 7,
+        "expected_asm": [
+            "VSETIVLI        zero, 2, e64, m1, tu, mu",
+            "ADDIW           ra, zero, 0x1(1)",
+            "SLLI            ra, ra, 0x20(32)",
+            "ADDI            ra, ra, 0xffffffff(-1)",
+            "VAND.VX         v26, v5, ra, none",
+            "VAND.VX         v27, v6, ra, none",
+            "VMUL.VV         v5, v26, v27, none"
+        ],
+        "disassembly": "pmuludq xmm3, xmm4"
+    },
+    "660ff4d2": {
+        "instruction_count": 7,
+        "expected_asm": [
+            "VSETIVLI        zero, 2, e64, m1, tu, mu",
+            "ADDIW           ra, zero, 0x1(1)",
+            "SLLI            ra, ra, 0x20(32)",
+            "ADDI            ra, ra, 0xffffffff(-1)",
+            "VAND.VX         v26, v4, ra, none",
+            "VAND.VX         v27, v4, ra, none",
+            "VMUL.VV         v4, v26, v27, none"
+        ],
+        "disassembly": "pmuludq xmm2, xmm2"
+    },
+    "660ff40f": {
+        "instruction_count": 9,
+        "expected_asm": [
+            "VSETIVLI        zero, 16, e8, m1, tu, mu",
+            "VLE8.V          v26, a0, none, 1",
+            "VSETIVLI        zero, 2, e64, m1, tu, mu",
+            "ADDIW           ra, zero, 0x1(1)",
+            "SLLI            ra, ra, 0x20(32)",
+            "ADDI            ra, ra, 0xffffffff(-1)",
+            "VAND.VX         v27, v3, ra, none",
+            "VAND.VX         v28, v26, ra, none",
+            "VMUL.VV         v3, v27, v28, none"
+        ],
+        "disassembly": "pmuludq xmm1, [rdi]"
     }
 }

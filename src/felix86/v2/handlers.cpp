@@ -4256,22 +4256,19 @@ FAST_HANDLE(PMULLD) {
 }
 
 FAST_HANDLE(PMULUDQ) {
-    biscuit::GPR shift = rec.scratch();
     biscuit::Vec dst = rec.getVec(&operands[0]);
     biscuit::Vec src = rec.getVec(&operands[1]);
     biscuit::Vec dst_masked = rec.scratchVec();
     biscuit::Vec src_masked = rec.scratchVec();
-    biscuit::Vec result = rec.scratchVec();
+    biscuit::GPR mask = rec.scratch();
 
     rec.setVectorState(SEW::E64, 2);
-    as.LI(shift, 32);
-    as.VSLL(dst_masked, dst, shift);
-    as.VSRL(dst_masked, dst_masked, shift);
-    as.VSLL(src_masked, src, shift);
-    as.VSRL(src_masked, src_masked, shift);
-    as.VMUL(result, dst_masked, src_masked);
+    as.LI(mask, 0xFFFF'FFFFull);
+    as.VAND(dst_masked, dst, mask);
+    as.VAND(src_masked, src, mask);
+    as.VMUL(dst, dst_masked, src_masked);
 
-    rec.setVec(&operands[0], result);
+    rec.setVec(&operands[0], dst);
 }
 
 FAST_HANDLE(PMULDQ) {
