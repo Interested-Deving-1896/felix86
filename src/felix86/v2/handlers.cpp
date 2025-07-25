@@ -6650,9 +6650,9 @@ FAST_HANDLE(PSLLDQ) {
     biscuit::Vec temp = rec.scratchVec();
     rec.setVectorState(SEW::E8, 16);
     if (imm > 15) {
-        as.VMV(temp, 0);
+        as.VXOR(temp, temp, temp);
     } else {
-        as.VMV(temp, 0);
+        as.VXOR(temp, temp, temp);
         as.VSLIDEUP(temp, dst, imm);
     }
     rec.setVec(&operands[0], temp);
@@ -6663,16 +6663,19 @@ FAST_HANDLE(PSRLDQ) {
     biscuit::Vec dst = rec.getVec(&operands[0]);
     biscuit::Vec temp = rec.scratchVec();
     if (imm > 15) {
-        rec.setVectorState(SEW::E64, 2);
-        as.VMV(temp, 0);
+        rec.setVectorState(SEW::E8, 16);
+        as.VXOR(temp, temp, temp);
     } else {
-        rec.setVectorState(SEW::E64, 2);
-        biscuit::GPR mask = rec.scratch();
-        as.LI(mask, ~((1ull << (16 - imm)) - 1));
-        as.VMV_SX(v0, mask);
+        if (Extensions::VLEN >= 256) {
+            biscuit::Vec scratch = rec.scratchVec();
+            rec.setVectorState(SEW::E64, 4);
+            as.VXOR(scratch, scratch, scratch);
+            rec.setVectorState(SEW::E8, 16);
+            as.VMV(scratch, dst);
+            dst = scratch;
+        }
         rec.setVectorState(SEW::E8, 16);
         as.VSLIDEDOWN(temp, dst, imm);
-        as.VAND(temp, temp, 0, VecMask::Yes);
     }
     rec.setVec(&operands[0], temp);
 }
