@@ -66,6 +66,7 @@ void* Freelist::allocate(u32 addr, size_t size) {
 
         if (!all_ok) {
             WARN("Couldn't find an available mapping in our freelist");
+            dump();
             return (void*)-ENOMEM;
         }
 
@@ -93,6 +94,7 @@ void* Freelist::allocate(u32 addr, size_t size) {
         } else {
             // Couldn't find...
             WARN("Couldn't find an available mapping in our freelist");
+            dump();
             return (void*)-ENOMEM;
         }
     }
@@ -109,6 +111,7 @@ void Freelist::deallocate(u32 addr, size_t size) {
     // Find where to place the new node
     Node* previous = nullptr;
     Node* current = list;
+    bool placed = false;
     while (current) {
         if (new_start >= current->start && new_end <= current->end) {
             // Entirely contained in an existing node, nothing to do
@@ -125,10 +128,23 @@ void Freelist::deallocate(u32 addr, size_t size) {
             } else {
                 list = new_node;
             }
+            placed = true;
+            break;
         }
 
         previous = current;
         current = current->next;
+    }
+
+    if (!placed) {
+        // We are freeing at the last node
+        Node* new_node = new Node;
+        new_node->start = new_start;
+        new_node->end = new_end;
+        new_node->next = nullptr;
+        ASSERT(previous->next == nullptr);
+        ASSERT(current == nullptr);
+        previous->next = new_node;
     }
 
     consolidate();
@@ -156,4 +172,13 @@ void Freelist::consolidate() {
             current = current->next;
         }
     } while (changed);
+}
+
+void Freelist::dump() {
+    Node* current = list;
+    int i = 0;
+    while (current) {
+        LOG("Free mapping %d: %lx-%lx", i++, (u64)current->start, (u64)current->end);
+        current = current->next;
+    }
 }
