@@ -348,6 +348,9 @@ void Recompiler::clearCodeCache(ThreadState* state) {
 
             as.RewindBuffer();
             emitNecessaryStuff();
+
+            // Undo the size increment
+            code_cache_size_index--;
         }
     } else {
         WARN("Clearing cache on thread %u", gettid());
@@ -366,7 +369,7 @@ u64 Recompiler::compile(ThreadState* state, u64 rip) {
     u64 size = code_cache_sizes[code_cache_size_index];
     size_t remaining_size = size - as.GetCodeBuffer().GetCursorOffset();
     // TODO: restrict max x86 instruction count per block
-    if (remaining_size < 200'000) { // less than ~200KB left, clear cache
+    if (remaining_size < 400'000) { // less than ~400KB left, clear cache
         clearCodeCache(state);
     }
 
@@ -2202,11 +2205,31 @@ void Recompiler::updateCarryAdc(biscuit::GPR lhs, biscuit::GPR result, biscuit::
 }
 
 void Recompiler::clearFlag(x86_ref_e ref) {
+    if (ref == X86_REF_PF) {
+        as.SB(x0, offsetof(ThreadState, pf), threadStatePointer());
+        return;
+    } else if (ref == X86_REF_AF) {
+        as.SB(x0, offsetof(ThreadState, af), threadStatePointer());
+        return;
+    }
+
     biscuit::GPR f = flag(ref);
     as.LI(f, 0);
 }
 
 void Recompiler::setFlag(x86_ref_e ref) {
+    if (ref == X86_REF_PF) {
+        biscuit::GPR one = scratch();
+        as.LI(one, 1);
+        as.SB(one, offsetof(ThreadState, pf), threadStatePointer());
+        return;
+    } else if (ref == X86_REF_AF) {
+        biscuit::GPR one = scratch();
+        as.LI(one, 1);
+        as.SB(one, offsetof(ThreadState, af), threadStatePointer());
+        return;
+    }
+
     biscuit::GPR f = flag(ref);
     as.LI(f, 1);
 }
