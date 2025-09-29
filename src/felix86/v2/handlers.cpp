@@ -1498,6 +1498,10 @@ FAST_HANDLE(UD2) {
     WARN_ONCE("UD2 instruction being compiled?");
 
     // UD2 will trigger SIGILL, so we need to do the same
+    // 8 bytes total to satisfy the linking code that asserts we have at least 2 instructions per block
+    as.C_UNDEF();
+    as.C_UNDEF();
+    as.C_UNDEF();
     as.C_UNDEF();
     rec.stopCompiling();
 }
@@ -9641,17 +9645,17 @@ FAST_HANDLE(FLD) {
         as.MV(a0, address);
         rec.callPointer(offsetof(ThreadState, f80_to_64));
         rec.restoreState();
-        rec.pushX87(fa0); // push return value
+        biscuit::FPR new_reg = rec.pushX87();
+        as.FMV_D(new_reg, fa0);
     } else {
         biscuit::FPR st = rec.getST(&operands[0]);
-        biscuit::FPR temp = rec.scratchFPR();
-        as.FMV_D(temp, st); // move to temp because getST could return allocated FPR
-        rec.pushX87(temp);
+        biscuit::FPR new_reg = rec.pushX87();
+        as.FMV_D(new_reg, st); // move to temp because getST could return allocated FPR
     }
 }
 
 FAST_HANDLE(FILD) {
-    biscuit::FPR ftemp = rec.scratchFPR();
+    biscuit::FPR ftemp = rec.pushX87();
     biscuit::GPR value = rec.getGPR(&operands[0]);
     switch (operands[0].size) {
     case 16: {
@@ -9671,7 +9675,6 @@ FAST_HANDLE(FILD) {
         UNREACHABLE();
     }
     }
-    rec.pushX87(ftemp);
 }
 
 void OP(void (Assembler::*func)(FPR, FPR, FPR, RMode), Recompiler& rec, Assembler& as, ZydisDecodedInstruction& instruction,
@@ -9912,7 +9915,7 @@ FAST_HANDLE(FTST) {
     biscuit::GPR nan_bit = rec.scratch();
     as.LI(rmask, mask);
     biscuit::GPR fsw = rec.scratch();
-    as.LD(fsw, offsetof(ThreadState, fpu_sw), rec.threadStatePointer());
+    as.LHU(fsw, offsetof(ThreadState, fpu_sw), rec.threadStatePointer());
     biscuit::FPR st0 = rec.getST(0);
     as.FCLASS_D(class_bits, st0);
     as.AND(fsw, fsw, rmask);
@@ -9939,7 +9942,7 @@ FAST_HANDLE(FTST) {
     as.OR(fsw, fsw, negative_bit);
     as.OR(fsw, fsw, equal_bit);
 
-    as.SD(fsw, offsetof(ThreadState, fpu_sw), rec.threadStatePointer());
+    as.SH(fsw, offsetof(ThreadState, fpu_sw), rec.threadStatePointer());
 }
 
 FAST_HANDLE(FPATAN) {
@@ -9960,10 +9963,9 @@ FAST_HANDLE(FPTAN) {
 
     // FPTAN also pushes 1.0 for compatibility reasons
     biscuit::GPR temp = rec.scratch();
-    biscuit::FPR one = rec.scratchFPR();
+    biscuit::FPR one = rec.pushX87();
     as.LI(temp, 0x3FF0000000000000ull);
     as.FMV_D_X(one, temp);
-    rec.pushX87(one);
 }
 
 FAST_HANDLE(FWAIT) {
@@ -10037,7 +10039,7 @@ FAST_HANDLE(FNSTENV) {
 
 FAST_HANDLE(FNSTSW) {
     biscuit::GPR temp = rec.scratch();
-    as.LWU(temp, offsetof(ThreadState, fpu_sw), rec.threadStatePointer());
+    as.LHU(temp, offsetof(ThreadState, fpu_sw), rec.threadStatePointer());
     rec.setGPR(&operands[0], temp);
 }
 
@@ -10197,7 +10199,7 @@ void FCOM(Recompiler& rec, Assembler& as, ZydisDecodedOperand* operands, int pop
     as.OR(c0, c0, c2);
     as.OR(c0, c0, c3);
 
-    as.SW(c0, offsetof(ThreadState, fpu_sw), rec.threadStatePointer());
+    as.SH(c0, offsetof(ThreadState, fpu_sw), rec.threadStatePointer());
 
     rec.resetScratch();
     if (pop_count == 1) {
@@ -10254,7 +10256,7 @@ FAST_HANDLE(FCHS) {
 }
 
 FAST_HANDLE(FLD1) {
-    biscuit::FPR st = rec.scratchFPR();
+    biscuit::FPR st = rec.pushX87();
 
     if (Extensions::Zfa) {
         as.FLI_D(st, 1.0);
@@ -10263,59 +10265,51 @@ FAST_HANDLE(FLD1) {
         as.LI(temp, 0x3FF0000000000000ull);
         as.FMV_D_X(st, temp);
     }
-
-    rec.pushX87(st);
 }
 
 FAST_HANDLE(FLDL2T) {
     constexpr u64 value = 0x400A'934F'0979'A371ull;
-    biscuit::FPR st = rec.scratchFPR();
+    biscuit::FPR st = rec.pushX87();
     biscuit::GPR temp = rec.scratch();
     as.LI(temp, value);
     as.FMV_D_X(st, temp);
-    rec.pushX87(st);
 }
 
 FAST_HANDLE(FLDL2E) {
     constexpr u64 value = 0x3FF7'1547'652B'82FEull;
-    biscuit::FPR st = rec.scratchFPR();
+    biscuit::FPR st = rec.pushX87();
     biscuit::GPR temp = rec.scratch();
     as.LI(temp, value);
     as.FMV_D_X(st, temp);
-    rec.pushX87(st);
 }
 
 FAST_HANDLE(FLDPI) {
     constexpr u64 value = 0x4009'21FB'5444'2D18ull;
-    biscuit::FPR st = rec.scratchFPR();
+    biscuit::FPR st = rec.pushX87();
     biscuit::GPR temp = rec.scratch();
     as.LI(temp, value);
     as.FMV_D_X(st, temp);
-    rec.pushX87(st);
 }
 
 FAST_HANDLE(FLDLG2) {
     constexpr u64 value = 0x3FD3'4413'509F'79FFull;
-    biscuit::FPR st = rec.scratchFPR();
+    biscuit::FPR st = rec.pushX87();
     biscuit::GPR temp = rec.scratch();
     as.LI(temp, value);
     as.FMV_D_X(st, temp);
-    rec.pushX87(st);
 }
 
 FAST_HANDLE(FLDLN2) {
     constexpr u64 value = 0x3FE6'2E42'FEFA'39EFull;
-    biscuit::FPR st = rec.scratchFPR();
+    biscuit::FPR st = rec.pushX87();
     biscuit::GPR temp = rec.scratch();
     as.LI(temp, value);
     as.FMV_D_X(st, temp);
-    rec.pushX87(st);
 }
 
 FAST_HANDLE(FLDZ) {
-    biscuit::FPR st = rec.scratchFPR();
+    biscuit::FPR st = rec.pushX87();
     as.FMV_D_X(st, x0);
-    rec.pushX87(st);
 }
 
 FAST_HANDLE(FABS) {
@@ -10368,9 +10362,12 @@ FAST_HANDLE(FNINIT) {
     as.LI(temp, -1);
     as.SH(temp, offsetof(ThreadState, fpu_tw), Recompiler::threadStatePointer());
 
+    as.SB(x0, offsetof(ThreadState, fpu_top), Recompiler::threadStatePointer());
+
     // FINIT sets it to nearest neighbor which happens to be 0 in both x86 and RISC-V
     as.FSRM(x0);
     rec.setFsrmSSE(false);
+    rec.resetX87();
 }
 
 void FCMOV(Recompiler& rec, Assembler& as, ZydisDecodedOperand* operands, biscuit::GPR cond) {
