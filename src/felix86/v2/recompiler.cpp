@@ -2207,7 +2207,17 @@ void Recompiler::scanAhead(u64 rip) {
                                 break;
                             }
 
-                            if (is_jump || is_ret || is_call || is_illegal || is_hlt || is_int3) {
+                            if (is_call || is_ret) {
+                                if (g_config.unsafe_flags && !g_config.paranoid) {
+                                    // Pretend call and ret overwrites all flags
+                                    changed_this_block = ZYDIS_CPUFLAG_CF | ZYDIS_CPUFLAG_PF | ZYDIS_CPUFLAG_AF | ZYDIS_CPUFLAG_ZF |
+                                                         ZYDIS_CPUFLAG_SF | ZYDIS_CPUFLAG_OF;
+                                }
+
+                                break;
+                            }
+
+                            if (is_jump || is_illegal || is_hlt || is_int3) {
                                 // Block ahead ended in <= 10 instructions so let's break
                                 break;
                             }
