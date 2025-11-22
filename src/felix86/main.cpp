@@ -53,6 +53,8 @@ static struct argp_option options[] = {
 
 int guest_arg_start_index = -1;
 
+std::filesystem::path unmodified_executable_path;
+
 template <>
 struct fmt::formatter<std::filesystem::path> : formatter<std::string_view> {
     template <typename FormatContext>
@@ -387,6 +389,7 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
     if (key == ARGP_KEY_ARG) {
         if (g_params.argv.empty()) {
             g_params.executable_path = arg;
+            unmodified_executable_path = arg;
         }
 
         g_params.argv.push_back(arg);
@@ -610,24 +613,120 @@ int main(int argc, char* argv[]) {
         return 1;
     } else {
         if (!std::filesystem::exists(g_params.executable_path)) {
-            ERROR("Executable path does not exist: %s", g_params.executable_path.c_str());
-            return 1;
+            // Executable path might be outside the rootfs but in a trusted folder, let's check
+            if (!g_execve_process && std::filesystem::exists(unmodified_executable_path) &&
+                std::filesystem::is_regular_file(unmodified_executable_path)) {
+                bool found = false;
+                std::error_code ec;
+                std::filesystem::path canonical_path = std::filesystem::canonical(unmodified_executable_path, ec);
+                if (ec) {
+                    ERROR("Executable not inside rootfs, couldn't canonicalize path");
+                }
+
+                for (const auto& fake_mount : g_fake_mounts) {
+                    if (is_subpath(canonical_path, fake_mount.src_path)) {
+                        // Path is in trusted folder, transform to path that is inside rootfs
+                        std::filesystem::path cutoff_path = canonical_path.string().substr(fake_mount.src_path.string().size());
+                        std::filesystem::path executable = g_config.rootfs_path / fake_mount.dst_path.relative_path() / cutoff_path.relative_path();
+                        if (chdir(executable.parent_path().c_str()) != 0) {
+                            WARN("Failed to chdir into %s", executable.parent_path().c_str());
+                        } else {
+                            g_dont_chdir = true;
+                        }
+                        g_params.executable_path = canonical_path;
+                        g_executable_path_absolute = executable;
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    std::filesystem::path parent = canonical_path.parent_path();
+                    int status;
+                    bool tty = isatty(STDOUT_FILENO);
+                    if (tty) {
+                        if (std::filesystem::exists("/bin/whiptail")) {
+                            status = WEXITSTATUS(
+                                system(("/bin/whiptail --title \"felix86: Add to trusted folders?\" --yes-button Yes --no-button No --yesno \"" +
+                                        (canonical_path.string() + " seems to be outside the rootfs." + " Would you like to add the parent folder " +
+                                         parent.string() + " to the trusted folders?") +
+                                        "\" 0 0")
+                                           .c_str()));
+                        } else {
+                            status = 2;
+                            WARN("Couldn't find /bin/whiptail to ask user if they want to trust the folder");
+                        }
+                    } else {
+                        if (std::filesystem::exists("/bin/zenity")) {
+                            status =
+                                WEXITSTATUS(system(("/bin/zenity --question --title=\"felix86: Add to trusted folders?\" --ok-label=\"Yes\" "
+                                                    "--cancel-label=\"No\" --text=\"" +
+                                                    (canonical_path.string() + " seems to be outside the rootfs." +
+                                                     " Would you like to add the parent folder " + parent.string() + " to the trusted folders?") +
+                                                    "\"")
+                                                       .c_str()));
+                        } else {
+                            status = 2;
+                            WARN("Couldn't find /bin/zenity to ask user if they want to trust the folder");
+                        }
+                    }
+
+                    if (status == 0) { // Yes
+                        Config::addTrustedPath(parent);
+                        Filesystem::TrustFolder(parent);
+                        for (const auto& fake_mount : g_fake_mounts) {
+                            if (is_subpath(canonical_path, fake_mount.src_path)) {
+                                std::filesystem::path cutoff_path = canonical_path.string().substr(fake_mount.src_path.string().size());
+                                std::filesystem::path executable =
+                                    g_config.rootfs_path / fake_mount.dst_path.relative_path() / cutoff_path.relative_path();
+                                if (chdir(executable.parent_path().c_str()) != 0) {
+                                    WARN("Failed to chdir into %s", executable.parent_path().c_str());
+                                } else {
+                                    g_dont_chdir = true;
+                                }
+                                g_params.executable_path = canonical_path;
+                                g_executable_path_absolute = executable;
+                                break;
+                            }
+                        }
+                    } else if (status == 1) { // No
+                        if (!tty) {
+                            int result = system(
+                                (std::string(
+                                     "/bin/zenity --info --title=\"felix86: Directory not trusted!\" --text=\"Running x86 executables that are "
+                                     "outside the rootfs (") +
+                                 g_config.rootfs_path.string() + ") require you to mark the directory as trusted!\"")
+                                    .c_str());
+                            (void)result;
+                        }
+                        ERROR("%s needs to be moved inside the rootfs or a parent folder needs to be trusted");
+                    } else {
+                        ERROR("%s is not in a trusted folder. Please add %s to %s/trusted.txt manually or move executable"
+                              " and its libraries inside rootfs",
+                              canonical_path.c_str(), parent.c_str(), Config::getConfigDir().c_str());
+                    }
+                }
+            } else {
+                ERROR("Executable path does not exist: %s or %s", unmodified_executable_path.c_str(), g_params.executable_path.c_str());
+            }
         }
 
         if (!std::filesystem::is_regular_file(g_params.executable_path)) {
-            ERROR("Executable path is not a regular file");
+            ERROR("Executable path %s is not a regular file", g_params.executable_path.c_str());
             return 1;
         }
     }
 
-    if (g_params.executable_path.is_absolute()) {
-        g_executable_path_absolute = g_params.executable_path.lexically_normal();
-    } else {
-        FdPath fd_path = Filesystem::resolve(AT_FDCWD, g_params.executable_path.c_str(), true);
-        ASSERT_MSG(fd_path.full_path(), "Failed to resolve %s", g_params.executable_path.c_str());
-        ASSERT_MSG(fd_path.full_path()[0] == '/', "Resolved path is not absolute? %s", fd_path.full_path());
-        g_executable_path_absolute = fd_path.full_path();
-        g_executable_path_absolute = g_executable_path_absolute.lexically_normal();
+    if (g_executable_path_absolute.empty()) {
+        if (g_params.executable_path.is_absolute()) {
+            g_executable_path_absolute = g_params.executable_path.lexically_normal();
+        } else {
+            FdPath fd_path = Filesystem::resolve(AT_FDCWD, g_params.executable_path.c_str(), true);
+            ASSERT_MSG(fd_path.full_path(), "Failed to resolve %s", g_params.executable_path.c_str());
+            ASSERT_MSG(fd_path.full_path()[0] == '/', "Resolved path is not absolute? %s", fd_path.full_path());
+            g_executable_path_absolute = fd_path.full_path();
+            g_executable_path_absolute = g_executable_path_absolute.lexically_normal();
+        }
     }
 
 #if 0
@@ -639,7 +738,8 @@ int main(int argc, char* argv[]) {
 
     if (!g_config.binfmt_misc_installed && !g_execve_process && check_if_privileged_executable(g_params.executable_path)) {
         // Privileged executable but no binfmt_misc support, warn the user
-        WARN("This is a privileged executable but the emulator isn't installed in binfmt_misc, might run into problems. Run `felix86 -b` to install "
+        WARN("This is a privileged executable but the emulator isn't installed in binfmt_misc, might run into problems. Run `felix86 -b` to "
+             "install "
              "it, make sure to remove other x86/x86-64 emulators from binfmt_misc");
     }
 
