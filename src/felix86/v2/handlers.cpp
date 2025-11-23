@@ -6795,7 +6795,7 @@ FAST_HANDLE(ROL) {
             if (operands[0].size == 32) {
                 biscuit::GPR result = rec.scratch();
                 as.RORIW(result, dst, (32 - operands[1].imm.value.u) & 0x1F);
-                rec.setGPR(&operands[0], dst);
+                rec.setGPR(&operands[0], result);
             } else {
                 as.RORI(dst, dst, (64 - operands[1].imm.value.u) & 0x3F);
                 rec.setGPR(&operands[0], dst);
@@ -6812,8 +6812,8 @@ FAST_HANDLE(ROL) {
             as.ZEXTW(rotated, rotated);
 
             biscuit::GPR not_zero = rec.scratch();
-            as.CZERO_EQZ(not_zero, rotated, is_zero);
-            as.CZERO_NEZ(masked_src, dst, is_zero);
+            as.CZERO_EQZ(not_zero, dst, is_zero);
+            as.CZERO_NEZ(masked_src, rotated, is_zero);
             as.OR(dst, masked_src, not_zero);
 
             if (operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
@@ -6879,7 +6879,7 @@ FAST_HANDLE(ROR) {
             if (operands[0].size == 32) {
                 biscuit::GPR result = rec.scratch();
                 as.RORIW(result, dst, operands[1].imm.value.u & 0x1F);
-                rec.setGPR(&operands[0], dst);
+                rec.setGPR(&operands[0], result);
             } else {
                 as.RORI(dst, dst, operands[1].imm.value.u & 0x3F);
                 rec.setGPR(&operands[0], dst);
@@ -6896,8 +6896,8 @@ FAST_HANDLE(ROR) {
             as.ZEXTW(rotated, rotated);
 
             biscuit::GPR not_zero = rec.scratch();
-            as.CZERO_EQZ(not_zero, rotated, is_zero);
-            as.CZERO_NEZ(masked_src, dst, is_zero);
+            as.CZERO_EQZ(not_zero, dst, is_zero);
+            as.CZERO_NEZ(masked_src, rotated, is_zero);
             as.OR(dst, masked_src, not_zero);
 
             if (operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
