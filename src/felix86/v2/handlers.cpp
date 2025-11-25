@@ -6222,6 +6222,36 @@ FAST_HANDLE(DPPS) {
     rec.setVec(&operands[0], dst);
 }
 
+FAST_HANDLE(DPPD) {
+    biscuit::GPR splat = rec.scratch();
+    biscuit::Vec mul = rec.scratchVec();
+    biscuit::Vec sum = rec.scratchVec();
+    biscuit::Vec dst = rec.getVec(&operands[0]);
+    biscuit::Vec src = rec.getVec(&operands[1]);
+    u8 immediate = rec.getImmediate(&operands[2]);
+
+    u8 mmask = immediate >> 4;
+    u8 zmask = ~immediate & 0b11;
+
+    rec.setVectorState(SEW::E64, 2);
+    as.VMV(v0, mmask);
+    as.VMV(mul, 0);
+    as.VMV(sum, 0);
+    as.VFMUL(mul, dst, src, VecMask::Yes);
+    as.VFREDUSUM(sum, mul, sum);
+    as.VMV_XS(splat, sum);
+    as.VMV(dst, splat);
+
+    if (zmask != 0) {
+        as.VMV(v0, zmask);
+        as.VXOR(dst, dst, dst, VecMask::Yes);
+    } else {
+        // Using all elements
+    }
+
+    rec.setVec(&operands[0], dst);
+}
+
 FAST_HANDLE(PSHUFLW) {
     u8 imm = rec.getImmediate(&operands[2]);
     u64 el0 = imm & 0b11;
@@ -9866,6 +9896,20 @@ FAST_HANDLE(PSADBW) {
         as.VOR(dst, result, reduction);
         rec.setVec(&operands[0], dst);
     }
+}
+
+FAST_HANDLE(MPSADBW) {
+    rec.writebackState();
+    if (operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+        as.ADDI(a1, rec.threadStatePointer(), offsetof(ThreadState, xmm) + sizeof(XmmReg) * (rec.zydisToRef(operands[1].reg.value) - X86_REF_XMM0));
+    } else {
+        biscuit::GPR address = rec.lea(&operands[1]);
+        as.MV(a1, address);
+    }
+    as.ADDI(a0, rec.threadStatePointer(), offsetof(ThreadState, xmm) + sizeof(XmmReg) * (rec.zydisToRef(operands[0].reg.value) - X86_REF_XMM0));
+    as.LI(a2, rec.getImmediate(&operands[2]));
+    rec.callPointer(offsetof(ThreadState, felix86_mpsadbw));
+    rec.restoreState();
 }
 
 FAST_HANDLE(PAVGB) {
