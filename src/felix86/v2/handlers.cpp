@@ -6312,44 +6312,34 @@ FAST_HANDLE(PSHUFHW) {
 }
 
 FAST_HANDLE(PALIGNR) {
-    x86_ref_e ref = rec.zydisToRef(operands[0].reg.value);
-    if (ref >= X86_REF_MM0 && ref <= X86_REF_MM7) {
-        ERROR("palignr not implemented for mmx registers");
-    }
+    int elements = operands[0].size / 8;
     u8 imm = rec.getImmediate(&operands[2]);
-    biscuit::GPR temp = rec.scratch();
-    biscuit::Vec result = rec.scratchVec();
-    biscuit::Vec slide_up = rec.scratchVec();
+    if (imm == elements) {
+        WARN("palingr is nop?");
+        return;
+    }
+
     biscuit::Vec dst = rec.getVec(&operands[0]);
     biscuit::Vec src = rec.getVec(&operands[1]);
 
-    rec.setVectorState(SEW::E64, 2);
-
-    if (imm > 31) {
-        as.VMV(dst, 0);
+    if (imm >= elements * 2) {
+        rec.setVectorState(SEW::E8, elements);
+        as.VXOR(dst, dst, dst);
         rec.setVec(&operands[0], dst);
         return;
     }
 
-    if (16 - imm > 0) {
-        as.LI(temp, ~((1ull << (16 - imm)) - 1));
-        as.VMV_SX(v0, temp);
-        rec.setVectorState(SEW::E8, 16);
-        as.VMV(result, 0);
-        as.VSLIDEDOWN(result, src, imm);
-        as.VAND(result, result, 0, VecMask::Yes);
-        as.VMV(slide_up, 0);
-        as.VSLIDEUP(slide_up, dst, 16 - imm);
-        as.VOR(result, result, slide_up);
-    } else {
-        as.LI(temp, ~((1ull << (32 - imm)) - 1));
-        as.VMV_SX(v0, temp);
-        rec.setVectorState(SEW::E8, 16);
-        as.VMV(result, 0);
-        as.VSLIDEDOWN(result, dst, imm - 16);
-        as.VAND(result, result, 0, VecMask::Yes);
-    }
+    biscuit::Vec result = rec.scratchVec();
+    rec.setVectorState(SEW::E8, 16);
 
+    if (imm > elements) {
+        as.VXOR(result, result, result);
+        rec.setVectorState(SEW::E8, 2 * elements - imm);
+        as.VSLIDEDOWN(result, dst, imm - elements);
+    } else {
+        as.VSLIDEDOWN(result, src, imm);
+        as.VSLIDEUP(result, dst, elements - imm);
+    }
     rec.setVec(&operands[0], result);
 }
 
@@ -10159,6 +10149,7 @@ FAST_HANDLE(CMPXCHG8B) {
 
 FAST_HANDLE(PAUSE) {
     if (Extensions::Zihintpause) {
+        WARN("Emitting PAUSE instruction");
         as.PAUSE();
     }
 }
