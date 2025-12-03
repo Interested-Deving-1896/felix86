@@ -5,6 +5,7 @@
 #include <linux/perf_event.h>
 #include <spawn.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -19,7 +20,6 @@
 #include "felix86/hle/fd.hpp"
 #include "felix86/hle/filesystem.hpp"
 #include "felix86/hle/mmap.hpp"
-#include "felix86/mounter.h"
 #include "felix86/v2/handlers.hpp"
 
 using namespace biscuit;
@@ -282,88 +282,12 @@ void initialize_globals() {
     }
 
     const char* guest_rootfs = getenv("__FELIX86_ROOTFS");
+    std::filesystem::path original_rootfs = g_config.rootfs_path;
     if (guest_rootfs) {
         g_config.rootfs_path = guest_rootfs;
     } else {
         ASSERT(!g_execve_process);
         ASSERT_MSG(!g_config.rootfs_path.empty(), "Empty rootfs path, please set using felix86 -s <PATH>");
-
-        // Running for the first time, and we don't have a __FELIX86_ROOTFS set
-        // This means we need to mount everything and set it as the rootfs path
-        // Problem is, we don't have root permissions. For this reason, we use a separate
-        // executable that's been given higher privileges during installation called felix86-mounter
-        // It will mount stuff in /run/felix86/mounts/mount-XXXXXX/rootfs and give us the path
-        // or fail and return non-zero.
-        int pipefd[2];
-        if (pipe(pipefd) != 0) {
-            UNREACHABLE();
-        }
-
-        posix_spawn_file_actions_t actions;
-        posix_spawn_file_actions_init(&actions);
-        posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipefd[0]);
-
-        pid_t pid;
-        char* argv[] = {(char*)"felix86-mounter", (char*)g_config.rootfs_path.c_str(), (char*)FELIX86_MOUNTER_VERSION, nullptr};
-        char* envp[] = {(char*)"__FELIX86_I_KNOW_WHAT_IM_DOING=1", nullptr};
-
-        if (posix_spawnp(&pid, "felix86-mounter", &actions, nullptr, argv, envp) != 0) {
-            PLAIN("felix86 needs to use felix86-mounter to function. Normally this is installed by the installation script, but if you are compiling "
-                  "yourself, you need to install it once manually");
-            PLAIN("Please run:");
-            PLAIN("    sudo mv ./build/felix86-mounter /usr/bin/felix86-mounter");
-            PLAIN("    sudo chown root:root /usr/bin/felix86-mounter");
-            PLAIN("    sudo chmod u+s /usr/bin/felix86-mounter");
-            ERROR("posix_spawnp failed. Is felix86-mounter in /usr/bin/felix86-mounter?");
-        }
-
-        posix_spawn_file_actions_destroy(&actions);
-
-        int status;
-        waitpid(pid, &status, 0);
-        close(pipefd[1]);
-
-        char buffer[4096];
-        memset(buffer, 0, sizeof(buffer));
-        ssize_t bytes_read = read(pipefd[0], buffer, sizeof(buffer));
-        if (bytes_read <= 0) {
-            ERROR("Couldn't read felix86-mounter output??");
-        }
-
-        if (WIFEXITED(status)) {
-            int code = WEXITSTATUS(status);
-            if (code == 0) {
-                std::filesystem::path path = buffer;
-                if (std::filesystem::exists(path)) {
-                    // Relocate executable path
-                    std::string new_executable_path =
-                        !g_params.executable_path.empty() ? std::filesystem::absolute(g_params.executable_path) : g_params.executable_path;
-                    if (new_executable_path.find(g_config.rootfs_path) == 0) {
-                        new_executable_path = new_executable_path.substr(g_config.rootfs_path.string().size());
-                    }
-                    new_executable_path = path / std::filesystem::path(new_executable_path).relative_path();
-                    g_params.executable_path = new_executable_path;
-                    g_config.rootfs_path = path;
-                } else {
-                    ERROR("Path returned by felix86-mounter does not exist: %s", path.c_str());
-                }
-            } else {
-                printf("felix86-mounter failed!!!\nError message:\n\n%s", buffer);
-                exit(1);
-            }
-        } else {
-            ERROR("felix86-mounter didn't exit normally?");
-        }
-
-        close(pipefd[0]);
-
-        ASSERT(!g_config.rootfs_path.empty());
-
-        // TODO: these paths are actually way too large for us to use
-        // ASSERT_MSG(std::filesystem::is_directory(g_config.rootfs_path.parent_path() / "mounts"),
-        //            "felix86-mounter didn't create us a 'mounts' directory?");
-        // g_mounts_path = g_config.rootfs_path.parent_path() / "mounts";
     }
 
     if (g_config.rootfs_path.empty()) {
@@ -417,6 +341,12 @@ void initialize_globals() {
     ASSERT_MSG(g_rootfs_fd > 0, "Failed to open rootfs directory");
     g_rootfs_fd = FD::moveToHighNumber(g_rootfs_fd);
     FD::protect(g_rootfs_fd);
+
+    ASSERT_MSG(Filesystem::FakeMount("/dev", original_rootfs / "dev"), "Failed to fake-mount /dev");
+    ASSERT_MSG(Filesystem::FakeMount("/proc", original_rootfs / "proc"), "Failed to fake-mount /proc");
+    ASSERT_MSG(Filesystem::FakeMount("/sys", original_rootfs / "sys"), "Failed to fake-mount /sys");
+    ASSERT_MSG(Filesystem::FakeMount("/run", original_rootfs / "run"), "Failed to fake-mount /run");
+    ASSERT_MSG(Filesystem::FakeMount("/tmp", original_rootfs / "tmp"), "Failed to fake-mount /tmp");
 
     if (getenv("__FELIX86_MOUNT_0")) {
         size_t current_mount = 0;

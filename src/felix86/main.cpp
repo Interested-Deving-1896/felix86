@@ -37,6 +37,7 @@ static char doc[] = "felix86 - a userspace x86_64 emulator";
 static char args_doc[] = "TARGET_BINARY [TARGET_ARGS...]";
 
 static struct argp_option options[] = {
+    {"shell", 5, 0, 0, "Enter the rootfs through a shell"},
     {"info", 'i', 0, 0, "Print system info"},
     {"configs", 'c', 0, 0, "Print the emulator configurations"},
     {"kill-all", 'k', 0, 0, "Kill all open emulator instances"},
@@ -400,6 +401,107 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
     }
 
     switch (key) {
+    case 5: {
+        std::error_code ec;
+        Config::initialize();
+        if (g_config.rootfs_path.empty()) {
+            printf("Rootfs path not set. Set it using `felix86 -s <path>`. If you don't have one, use the installer script!\n");
+            exit(1);
+        }
+
+        bool rootfs_exists = std::filesystem::exists(g_config.rootfs_path, ec);
+        if (!rootfs_exists || ec) {
+            printf("Rootfs path %s does not exist\n", g_config.rootfs_path.c_str());
+            exit(1);
+        }
+
+        bool rootfs_dir = std::filesystem::is_directory(g_config.rootfs_path, ec);
+        if (!rootfs_dir || ec) {
+            printf("Rootfs path %s is not a directory\n", g_config.rootfs_path.c_str());
+            exit(1);
+        }
+
+        std::filesystem::path shell_path;
+        const char* shell = getenv("SHELL");
+        if (shell) {
+            std::filesystem::path path = g_config.rootfs_path / std::filesystem::path(shell).relative_path();
+            bool exists = std::filesystem::exists(path, ec);
+            bool is_file = std::filesystem::is_regular_file(path, ec);
+            if (exists && is_file && !ec) {
+                shell_path = path;
+            }
+        }
+
+        if (shell_path.empty()) {
+            shell_path = g_config.rootfs_path / "bin/bash";
+        }
+
+        if (!std::filesystem::exists(shell_path, ec) || !std::filesystem::is_regular_file(shell_path, ec)) {
+            printf("Couldn't find a shell inside the rootfs\n");
+            exit(1);
+        }
+
+        const char* home_env = getenv("HOME");
+        if (!home_env) {
+            printf("$HOME is not set?\n");
+            exit(1);
+        }
+
+        const std::filesystem::path home = home_env;
+        const std::filesystem::path home_inside_rootfs = g_config.rootfs_path / home.relative_path();
+        std::filesystem::create_directories(home_inside_rootfs, ec);
+        if (ec) {
+            printf("Failed to create directories %s\n", home_inside_rootfs.c_str());
+            exit(1);
+        }
+
+        int result = chdir(home_inside_rootfs.c_str());
+        if (result != 0) {
+            printf("Failed to chdir to %s\n", home_inside_rootfs.c_str());
+            exit(1);
+        }
+
+        std::string path_string = shell_path;
+        std::string self = "/proc/self/exe";
+        std::string ps1;
+        std::string norc;
+        if (shell_path.filename() == "zsh") {
+            ps1 = "PS1=%F{215}felix86%f %F{153}%~%f > ";
+            norc = "-f";
+        } else if (shell_path.filename() == "bash") {
+            ps1 = "PS1=\\033[38;5;215mfelix86 \\033[38;5;153m\\w\\033[0m > ";
+            norc = "--norc";
+        } else {
+            // We don't know the escape codes used...
+            ps1 = "PS1=felix86 > ";
+        }
+
+        char* const argv[4] = {
+            self.data(),
+            path_string.data(),
+            norc.empty() ? nullptr : norc.data(),
+            nullptr,
+        };
+
+        std::string quiet = "FELIX86_QUIET=1";
+        std::vector<char*> envp;
+        char** envs = environ;
+        do {
+            std::string str = *envs;
+            if (str.find("PS1=") == 0) {
+                continue;
+            }
+            envp.push_back(*envs++);
+        } while (*envs);
+        envp.push_back(ps1.data());
+        envp.push_back(quiet.data());
+        envp.push_back(nullptr);
+
+        (void)execve(self.c_str(), argv, envp.data());
+        printf("Failed to start %s, error: %s\n", path_string.c_str(), strerror(errno));
+        exit(1);
+        break;
+    }
     case 'i': {
         exit(print_system_info());
         break;
@@ -546,6 +648,7 @@ int main(int argc, char* argv[]) {
         g_params.argv[0] = argv0_original;
     } else {
         ASSERT(!g_execve_process);
+        replace_all(g_params.argv[0], g_config.rootfs_path, "");
     }
 
     std::string args = "Arguments: ";
@@ -620,35 +723,48 @@ int main(int argc, char* argv[]) {
         ERROR("Executable path not specified");
         return 1;
     } else {
-        if (!std::filesystem::exists(g_params.executable_path)) {
-            // Executable path might be outside the rootfs but in a trusted folder, let's check
-            if (!g_execve_process && std::filesystem::exists(unmodified_executable_path) &&
-                std::filesystem::is_regular_file(unmodified_executable_path)) {
-                bool found = false;
-                std::error_code ec;
-                std::filesystem::path canonical_path = std::filesystem::canonical(unmodified_executable_path, ec);
-                if (ec) {
-                    ERROR("Executable not inside rootfs, couldn't canonicalize path");
-                }
+        g_params.executable_path = std::filesystem::absolute(g_params.executable_path);
+        if (is_subpath(g_params.executable_path, g_config.rootfs_path)) {
+            // All is good
+            std::string scwd;
+            {
+                char buffer[PATH_MAX];
+                char* cwd = getcwd(buffer, PATH_MAX);
+                ASSERT(cwd == buffer);
+                scwd = cwd;
+            }
 
-                for (const auto& fake_mount : g_fake_mounts) {
-                    if (is_subpath(canonical_path, fake_mount.src_path)) {
-                        // Path is in trusted folder, transform to path that is inside rootfs
-                        std::filesystem::path cutoff_path = canonical_path.string().substr(fake_mount.src_path.string().size());
-                        std::filesystem::path executable = g_config.rootfs_path / fake_mount.dst_path.relative_path() / cutoff_path.relative_path();
-                        if (chdir(executable.parent_path().c_str()) != 0) {
-                            WARN("Failed to chdir into %s", executable.parent_path().c_str());
+            if (is_subpath(scwd, g_config.rootfs_path)) {
+                g_dont_chdir = true; // don't change the dir, cwd is already inside rootfs
+            }
+        } else {
+            // Executable path might be outside the rootfs but in a fakemount (e.g. in /tmp or in a trusted folder)
+            std::error_code ec;
+            bool found = false;
+            std::filesystem::path canonical_path = std::filesystem::canonical(unmodified_executable_path, ec);
+            if (ec) {
+                ERROR("Executable not inside rootfs, couldn't canonicalize path");
+            }
+
+            for (const auto& fake_mount : g_fake_mounts) {
+                if (is_subpath(canonical_path, fake_mount.src_path)) {
+                    if (!g_execve_process) {
+                        std::filesystem::path parent_path = canonical_path.parent_path();
+                        if (chdir(parent_path.c_str()) != 0) {
+                            WARN("Failed to chdir into %s", parent_path.c_str());
                         } else {
                             g_dont_chdir = true;
                         }
-                        g_params.executable_path = canonical_path;
-                        g_executable_path_absolute = executable;
-                        found = true;
-                        break;
                     }
-                }
 
-                if (!found) {
+                    g_params.executable_path = canonical_path;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                if (!g_execve_process) {
                     std::filesystem::path parent = canonical_path.parent_path();
                     int status;
                     bool tty = isatty(STDOUT_FILENO);
@@ -685,15 +801,13 @@ int main(int argc, char* argv[]) {
                         for (const auto& fake_mount : g_fake_mounts) {
                             if (is_subpath(canonical_path, fake_mount.src_path)) {
                                 std::filesystem::path cutoff_path = canonical_path.string().substr(fake_mount.src_path.string().size());
-                                std::filesystem::path executable =
-                                    g_config.rootfs_path / fake_mount.dst_path.relative_path() / cutoff_path.relative_path();
+                                std::filesystem::path executable = fake_mount.dst_path / cutoff_path.relative_path();
                                 if (chdir(executable.parent_path().c_str()) != 0) {
                                     WARN("Failed to chdir into %s", executable.parent_path().c_str());
                                 } else {
                                     g_dont_chdir = true;
                                 }
                                 g_params.executable_path = canonical_path;
-                                g_executable_path_absolute = executable;
                                 break;
                             }
                         }
@@ -714,26 +828,7 @@ int main(int argc, char* argv[]) {
                               canonical_path.c_str(), parent.c_str(), Config::getConfigDir().c_str());
                     }
                 }
-            } else {
-                ERROR("Executable path does not exist: %s or %s", unmodified_executable_path.c_str(), g_params.executable_path.c_str());
             }
-        }
-
-        if (!std::filesystem::is_regular_file(g_params.executable_path)) {
-            ERROR("Executable path %s is not a regular file", g_params.executable_path.c_str());
-            return 1;
-        }
-    }
-
-    if (g_executable_path_absolute.empty()) {
-        if (g_params.executable_path.is_absolute()) {
-            g_executable_path_absolute = g_params.executable_path.lexically_normal();
-        } else {
-            FdPath fd_path = Filesystem::resolve(AT_FDCWD, g_params.executable_path.c_str(), true);
-            ASSERT_MSG(fd_path.full_path(), "Failed to resolve %s", g_params.executable_path.c_str());
-            ASSERT_MSG(fd_path.full_path()[0] == '/', "Resolved path is not absolute? %s", fd_path.full_path());
-            g_executable_path_absolute = fd_path.full_path();
-            g_executable_path_absolute = g_executable_path_absolute.lexically_normal();
         }
     }
 

@@ -667,6 +667,14 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
         result = SYSCALL(writev, arg1, arg2, arg3, arg4, arg5, arg6);
         break;
     }
+    case felix86_riscv64_preadv: {
+        result = SYSCALL(preadv, arg1, arg2, arg3, arg4, arg5, arg6);
+        break;
+    }
+    case felix86_riscv64_pwritev: {
+        result = SYSCALL(pwritev, arg1, arg2, arg3, arg4, arg5, arg6);
+        break;
+    }
     case felix86_riscv64_exit_group: {
         state->exit_reason = EXIT_REASON_EXIT_GROUP_SYSCALL;
         state->exit_code = arg1;
@@ -1554,7 +1562,7 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
 
         syscall(SYS_execve, executable.c_str(), &argv[0], envp.data());
 
-        ASSERT_MSG(false, "Error during execve: %s", strerror(errno));
+        ASSERT_MSG(false, "Error during execve: %s (executable: %s)", strerror(errno), executable.c_str());
         break;
     }
     case felix86_riscv64_umask: {

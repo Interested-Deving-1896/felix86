@@ -15,6 +15,23 @@
 
 #define FLAGS_SET(v, flags) ((~(v) & (flags)) == 0)
 
+void remove_if_found(std::string& path, const std::filesystem::path& rootfs) {
+    if (path.find(rootfs) == 0) {
+        if (path == rootfs) {
+            // Special case, it is the rootfs path
+            path = "/";
+        } else {
+            std::string sub = path.substr(rootfs.string().size());
+            path = sub;
+        }
+
+        ASSERT(!path.empty());
+        if (path[0] != '/') {
+            path = '/' + path;
+        }
+    }
+}
+
 bool statx_inode_same(const struct statx* a, const struct statx* b) {
     return (a && a->stx_mask != 0) && (b && b->stx_mask != 0) && FLAGS_SET(a->stx_mask, STATX_TYPE | STATX_INO) &&
            FLAGS_SET(b->stx_mask, STATX_TYPE | STATX_INO) && ((a->stx_mode ^ b->stx_mode) & S_IFMT) == 0 && a->stx_dev_major == b->stx_dev_major &&
@@ -31,6 +48,17 @@ int generate_memfd(const char* path, int flags) {
 
 void seal_memfd(int fd) {
     ASSERT(fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) == 0);
+}
+
+void replace_trusted_folder_path(std::string& path) {
+    for (const auto& trusted : g_fake_mounts) {
+        if (trusted.trusted_folder) {
+            if (path.find(trusted.src_path) == 0) {
+                replace_all(path, trusted.src_path, trusted.dst_path);
+                break;
+            }
+        }
+    }
 }
 
 void Filesystem::initializeEmulatedNodes() {
@@ -77,8 +105,8 @@ void Filesystem::initializeEmulatedNodes() {
 
     // Populate the stat field in each node
     for (int i = 0; i < EMULATED_NODE_COUNT; i++) {
-        std::filesystem::path node_path = g_config.rootfs_path / emulated_nodes[i].path.relative_path();
-        if (std::filesystem::exists(node_path)) { // if we are chrooted with no access to /proc then tough luck
+        std::filesystem::path node_path = emulated_nodes[i].path;
+        if (std::filesystem::exists(node_path)) {
             ASSERT(statx(AT_FDCWD, node_path.c_str(), 0, STATX_TYPE | STATX_INO | STATX_MNT_ID, &emulated_nodes[i].stat) == 0);
         }
     }
@@ -94,7 +122,8 @@ std::filesystem::path Filesystem::ConvertToTrustedPath(const std::filesystem::pa
 
     // Make our fake directory
     std::error_code ec;
-    const std::filesystem::path dest_path = std::filesystem::path("/run") / "felix86" / "trusted" / normalized_path / dirname;
+    const std::filesystem::path dest_path =
+        std::filesystem::path("/run") / "user" / std::to_string(geteuid()) / "felix86" / "trusted" / normalized_path / dirname;
     if (std::filesystem::exists(dest_path, ec) && std::filesystem::is_directory(dest_path, ec)) {
         return dest_path;
     }
@@ -111,14 +140,14 @@ bool Filesystem::TrustFolder(const std::filesystem::path& path) {
     // Goal: We need a way to run things that are outside the rootfs
     // Ideas:
     // - Symlink folder: Bad. Symlinks are resolved inside the rootfs. Allows access outside the rootfs
-    // - Mounting: Bad. Pollutes mounts even more, gets us deeper in root requiring hell
+    // - Mounting: Bad. Pollutes mountinfo, gets us in root requiring hell
     // - Fake mounting: Seems to work. But then:
     //    Say /mydir is mounted to /rootfs/home/mnt
     //    /mydir/test should resolve to /rootfs/home/mnt/test, sure
     //    /mydir/.. should resolve to /rootfs/home, not /, sure
     //    open(/home/mnt) should resolve to open(/mydir), what about a later open(fd, "..")? Needs care
-    // We will place these fake paths inside a tmpfs, in this case /run/felix86/trusted/NormalizedPath/DirName
-    // For example, say my path is /home/myname/mydir, the dir it will exist in is /run/felix86/trusted/home-myname-mydir/mydir
+    // We will place these fake paths inside a tmpfs, in this case /run/user/$euid/felix86/trusted/NormalizedPath/DirName
+    // For example, say my path is /home/myname/mydir, the dir it will exist in is /run/user/$euid/felix86/trusted/home-myname-mydir/mydir
     // In case programs rely on the directory name the executable is in being correct (for whatever reason) then this would cover it
     // The "normalized path" here serves as a unique identifier per trusted path
     // This is to not conflict with other dirs that have the same final component name but a different path
@@ -138,16 +167,22 @@ bool Filesystem::TrustFolder(const std::filesystem::path& path) {
         return false;
     }
 
-    return FakeMount(final_path, dest_path);
+    return FakeMount(final_path, dest_path, true);
 }
 
 // Make our resolveImpl function think that dst points to mount_me and has the contents of mount_me, while
 // also not allowing the program to see the contents of mount_me/.. (in this case it would see dst/..)
 // Currently, dst must be a path that is mounted inside the rootfs like /run/... because of our dst.relative_path shenanigans when mount_me+".."
-bool Filesystem::FakeMount(const std::filesystem::path& mount_me, const std::filesystem::path& dst) {
+bool Filesystem::FakeMount(const std::filesystem::path& mount_me, const std::filesystem::path& dst, bool trusted_folder) {
     std::error_code ec;
     bool is_directory = std::filesystem::is_directory(mount_me, ec);
     if (!is_directory || ec) {
+        return false;
+    }
+
+    std::filesystem::create_directories(dst, ec);
+    if (ec) {
+        WARN("Failed to create directory %s, is the rootfs owned by a higher privileged user?", dst.c_str());
         return false;
     }
 
@@ -181,6 +216,20 @@ bool Filesystem::FakeMount(const std::filesystem::path& mount_me, const std::fil
 
     node.src_fd = FD::moveToHighNumber(result);
     FD::protect(node.src_fd);
+
+    if (trusted_folder) {
+        result = open(dst.parent_path().c_str(), O_PATH | O_DIRECTORY);
+        if (result == -1) {
+            return false;
+        }
+
+        node.dst_parent_fd = FD::moveToHighNumber(result);
+        FD::protect(node.dst_parent_fd);
+    } else {
+        node.dst_parent_fd = g_rootfs_fd;
+    }
+
+    node.trusted_folder = trusted_folder;
 
     g_fake_mounts.push_back(node);
     return true;
@@ -258,9 +307,13 @@ int Filesystem::ReadlinkAt(int fd, const char* filename, char* buf, int bufsiz) 
         ASSERT(!npath.is_error());
         ASSERT(npath.full_path());
         std::string path = npath.full_path();
-        const size_t rootfs_size = g_config.rootfs_path.string().size();
+        size_t rootfs_size;
+        if (is_subpath(path, g_config.rootfs_path)) {
+            rootfs_size = g_config.rootfs_path.string().size();
+        } else {
+            rootfs_size = 0;
+        }
         const size_t stem_size = path.size() - rootfs_size;
-        ASSERT_MSG(path.find(g_config.rootfs_path.string()) == 0, "Path: %s", path.c_str()); // it should be in rootfs but lets make sure
         int bytes = std::min((int)stem_size, bufsiz);
         memcpy(buf, path.c_str() + rootfs_size, bytes);
         return bytes;
@@ -278,6 +331,7 @@ int Filesystem::ReadlinkAt(int fd, const char* filename, char* buf, int bufsiz) 
 
     if (result > 0) {
         std::string str(our_buffer, result);
+        // TODO: when magic link, replace_trusted_folder_path(str), for /proc/self/fd stuff
         removeRootfsPrefix(str);
         strncpy(buf, str.c_str(), bufsiz);
         return std::min(bufsiz, (int)str.size());
@@ -291,6 +345,7 @@ int Filesystem::Getcwd(char* buf, size_t size) {
 
     if (result > 0) {
         std::string str = buf;
+        replace_trusted_folder_path(str);
         removeRootfsPrefix(str);
         strncpy(buf, str.c_str(), size);
         return strlen(buf);
@@ -570,6 +625,37 @@ int Filesystem::Rmdir(const char* dir) {
     return rmdirInternal(fd_path.full_path());
 }
 
+std::filesystem::path create_unique_mount_path() {
+    if (g_mounts_path.empty()) {
+        std::filesystem::path rundir = "/run/user/" + std::to_string(geteuid());
+        if (!std::filesystem::exists(rundir)) {
+            rundir = "/tmp"; // :(
+            if (!std::filesystem::exists(rundir)) {
+                ERROR("Neither %s or /tmp exist", ("/run/user/" + std::to_string(geteuid())).c_str());
+            }
+        }
+
+        std::filesystem::path mounts = rundir / "felix86" / "mounts";
+        std::error_code ec;
+        std::filesystem::create_directories(mounts, ec);
+        if (ec) {
+            ERROR("Failed while creating directories for pivot root: %s", mounts.c_str());
+        }
+        std::string templ = mounts.string() + "/XXXXXX";
+        char* path = mkdtemp(templ.data());
+        ASSERT_MSG(path == templ.data(), "Failed to mkdtemp for mounts directory?");
+        g_mounts_path = path;
+    }
+
+    std::filesystem::path path = g_mounts_path / ("mount." + std::to_string(gettid()) + ".XXXXXX");
+    char buffer[PATH_MAX];
+    ASSERT(path.string().size() < PATH_MAX);
+    strncpy(buffer, path.c_str(), PATH_MAX);
+    char* dir = mkdtemp(buffer);
+    ASSERT_MSG(dir == buffer, "Couldn't mkdtemp at %s", buffer);
+    return dir;
+}
+
 int Filesystem::Chroot(const char* path) {
     WARN("chroot(%s)", path);
     if (!path) {
@@ -585,13 +671,27 @@ int Filesystem::Chroot(const char* path) {
         return -fd_path.get_errno();
     }
 
+    // Mount at a unique path
+    // Because chrooting is only CAP_SYS_CHROOT and not CAP_SYS_ADMIN, if this fails
+    // we will do without
+    std::filesystem::path final_path;
+    std::filesystem::path dir = create_unique_mount_path();
+    int result = ::mount(fd_path.full_path(), dir.c_str(), nullptr, MS_BIND, nullptr);
+    if (result == 0) {
+        final_path = dir;
+    } else {
+        WARN("Mount failed during chroot, may cause problems");
+        final_path = fd_path.full_path();
+    }
+
     // TODO: setting rootfs_path is most likely thread unsafe?
     auto guard = g_process_globals.states_lock.lock();
-    g_config.rootfs_path = fd_path.full_path();
+    g_config.rootfs_path = final_path;
+    g_process_globals.mount_paths.push_back(g_config.rootfs_path);
     int old_rootfs_fd = g_rootfs_fd;
-    g_rootfs_fd = open(fd_path.full_path(), O_PATH | O_DIRECTORY);
+    g_rootfs_fd = open(final_path.c_str(), O_PATH | O_DIRECTORY);
     FD::unprotectAndClose(old_rootfs_fd);
-    ASSERT_MSG(g_rootfs_fd > 0, "Failed to open new rootfs dir: %s", fd_path.full_path());
+    ASSERT_MSG(g_rootfs_fd > 0, "Failed to open new rootfs dir: %s", final_path.c_str());
     g_rootfs_fd = FD::moveToHighNumber(g_rootfs_fd);
     FD::protect(g_rootfs_fd);
     return 0;
@@ -609,18 +709,7 @@ int Filesystem::PivotRoot(const char* new_root, const char* put_old) {
 
     const char* new_root_full = new_root_resolved.full_path();
 
-    if (g_mounts_path.empty()) {
-        char templ[] = "/tmp/.f86.mnt.XXXXXX";
-        char* path = mkdtemp(templ);
-        ASSERT_MSG(path == templ, "Failed to mkdtemp for mounts directory?");
-        g_mounts_path = path;
-    }
-
-    std::filesystem::path path = g_mounts_path / ("mount." + std::to_string(gettid()) + ".XXXXXX");
-    char buffer[PATH_MAX];
-    ASSERT(path.string().size() < PATH_MAX);
-    strncpy(buffer, path.c_str(), PATH_MAX);
-    char* dir = mkdtemp(buffer);
+    std::filesystem::path path = create_unique_mount_path();
 
     // Move the new_root mount to the g_mounts_path because we want a unique path when doing removeRootfsPrefix
     // so as to not accidentally remove parts of the root that we aren't supposed to
@@ -636,21 +725,21 @@ int Filesystem::PivotRoot(const char* new_root, const char* put_old) {
     // Solution: make a separate dir for each rootfs
     // Each /proc/self/fd/# will now resolve to a path with the rootfs it had at the time of opening the file
     // This way we can get the proper guest path after removeRootfsPrefix!
-    int result = ::mount(new_root_full, dir, nullptr, MS_MOVE, nullptr);
+    int result = ::mount(new_root_full, path.c_str(), nullptr, MS_MOVE, nullptr);
 
     // Unlike chroot, pivot_root is CAP_SYS_ADMIN,
     if (result != 0) {
-        WARN("Failed to move mount during pivot_root %s -> %s, error: %s", new_root_full, dir, strerror(errno));
+        WARN("Failed to move mount during pivot_root %s -> %s, error: %s", new_root_full, path.c_str(), strerror(errno));
         return -errno;
     } else {
         auto lock = g_process_globals.states_lock.lock();
         int old_rootfs_fd = g_rootfs_fd;
-        g_rootfs_fd = open(dir, O_PATH | O_DIRECTORY);
+        g_rootfs_fd = open(path.c_str(), O_PATH | O_DIRECTORY);
         FD::unprotectAndClose(old_rootfs_fd);
-        ASSERT_MSG(g_rootfs_fd > 0, "Failed to open new rootfs dir: %s", dir);
+        ASSERT_MSG(g_rootfs_fd > 0, "Failed to open new rootfs dir: %s", path.c_str());
         g_rootfs_fd = FD::moveToHighNumber(g_rootfs_fd);
         FD::protect(g_rootfs_fd);
-        g_config.rootfs_path = dir;
+        g_config.rootfs_path = path;
 
         g_process_globals.mount_paths.push_back(g_config.rootfs_path);
     }
@@ -680,6 +769,13 @@ int Filesystem::PivotRoot(const char* new_root, const char* put_old) {
 }
 
 int Filesystem::Mount(const char* source, const char* target, const char* fstype, u64 flags, const void* data) {
+    bool mount_root_if_fail = false;
+    if (source == nullptr && std::string(target) == "/" && (flags & MS_SLAVE) && fstype == nullptr && data == nullptr) {
+        // HACK: changing propagation type of root, but rootfs may not be a mount, and it will cause this to fail
+        // If it fails, try doing the syscall on the original root. Needed by bubblewrap.
+        mount_root_if_fail = true;
+    }
+
     const char* sptr = nullptr;
     const char* tptr = nullptr;
 
@@ -702,7 +798,24 @@ int Filesystem::Mount(const char* source, const char* target, const char* fstype
         }
         tptr = rtarget.full_path();
     }
-    int result = ::mount(sptr, tptr, fstype, flags, data);
+    int result;
+
+    do {
+        result = ::mount(sptr, tptr, fstype, flags, data);
+        if (!mount_root_if_fail) {
+            break;
+        } else if (result != 0 && errno == EINVAL) {
+            WARN("Rootfs isn't a mount and tried to make it MS_SLAVE, doing it to host root instead");
+            result = mount(source, target, fstype, flags, data);
+            if (result != 0) {
+                WARN("Failed to make host root MS_SLAVE...");
+            }
+            break;
+        } else {
+            break;
+        }
+    } while (true);
+
     if (result != 0) {
         int error = errno;
         VERBOSE("Mounting %s -> %s, error: %s", sptr, tptr, strerror(errno));
@@ -841,25 +954,8 @@ FdPath Filesystem::resolve(const char* path, bool resolve_symlinks) {
 void Filesystem::removeRootfsPrefix(std::string& path) {
     // Check if the path starts with rootfs (ie. when readlinking /proc stuff) and remove it
     auto lock = g_process_globals.states_lock.lock();
-    auto remove_if_found = [&path](const std::filesystem::path& rootfs) {
-        if (path.find(rootfs) == 0) {
-            if (path == g_config.rootfs_path) {
-                // Special case, it is the rootfs path
-                path = "/";
-            } else {
-                std::string sub = path.substr(rootfs.string().size());
-                path = sub;
-            }
-
-            ASSERT(!path.empty());
-            if (path[0] != '/') {
-                path = '/' + path;
-            }
-        }
-    };
-
     for (const auto& rootfs : g_process_globals.mount_paths) {
-        remove_if_found(rootfs.lexically_normal());
+        remove_if_found(path, rootfs.lexically_normal());
     }
 }
 
@@ -903,7 +999,10 @@ FdPath Filesystem::resolveImpl(int fd, const char* path, bool resolve_final) {
     std::filesystem::path current_relative_path;
 
     size_t size = strlen(path);
-    ASSERT_MSG(size > 0 && size < PATH_MAX, "Path exceeds maximum limit?");
+    if (size >= PATH_MAX) {
+        WARN("Starting name %s too long", path);
+        return FdPath::error(ENAMETOOLONG);
+    }
 
     std::filesystem::path resolve_me = std::filesystem::path(path).relative_path();
 
@@ -965,13 +1064,18 @@ FdPath Filesystem::resolveImpl(int fd, const char* path, bool resolve_final) {
                 continue;
             } else {
                 // Go through our fake mounts and see if any match
+                bool found = false;
                 for (const FakeMountNode& mount : g_fake_mounts) {
                     if (statx_inode_same(&mount.src_stat, &current_statx)) {
                         // Don't allow looking outside the fake mount, redirect to outside of where we are mounted
-                        current_fd = g_rootfs_fd;
-                        current_relative_path = mount.dst_path.parent_path().relative_path();
+                        current_fd = mount.dst_parent_fd;
+                        current_relative_path = ".";
+                        found = true;
                         break;
                     }
+                }
+                if (found) {
+                    continue;
                 }
             }
         }
@@ -1132,107 +1236,34 @@ FdPath Filesystem::resolveImpl(int fd, const char* path, bool resolve_final) {
     current_relative_path = current_relative_path.lexically_normal();
     ASSERT(current_relative_path.is_relative());
 
+    // Final check: is the final path a fake mount?
+    struct statx current_statx;
+    result = statx(current_fd, current_relative_path.c_str(), AT_EMPTY_PATH, STATX_TYPE | STATX_INO | STATX_MNT_ID, &current_statx);
+    if (result == 0) {
+        for (const FakeMountNode& mount : g_fake_mounts) {
+            if (statx_inode_same(&mount.dst_stat, &current_statx)) {
+                current_fd = mount.src_fd;
+                current_relative_path = ".";
+                break;
+            }
+        }
+    }
+
     if (current_relative_path.empty()) {
         // We can't use an empty path in many syscalls and we can't convert it to null either
         // So in this case we will convert it to a full path and return that instead
         FdPath ret = FdPath::create(current_fd, current_relative_path);
         ret.full_path();
+        if (strlen(ret.full_path()) >= PATH_MAX) {
+            WARN("Resolved path %s too long", ret.full_path());
+            return FdPath::error(ENAMETOOLONG);
+        }
         return ret;
     }
 
+    if (current_relative_path.string().size() >= PATH_MAX) {
+        WARN("Resolved path %s too long", current_relative_path.c_str());
+        return FdPath::error(ENAMETOOLONG);
+    }
     return FdPath::create(current_fd, current_relative_path);
-}
-
-std::pair<int, NullablePath> Filesystem::resolveImplOld(int fd, const char* path, bool resolve_symlinks) {
-    if (path == nullptr) {
-        return {fd, nullptr};
-    }
-
-    if (path[0] == 0) {
-        return {fd, path};
-    }
-
-    if (path[0] == '/' && path[1] == 0) {
-        return {AT_FDCWD, g_config.rootfs_path};
-    }
-
-    if (isProcSelfExe(path)) {
-        return {AT_FDCWD, g_executable_path_absolute};
-    }
-
-    // Convert the fd + path combo to an absolute path;
-    std::filesystem::path resolve_me;
-    if (path[0] == '/') {
-        resolve_me = path;
-    } else {
-        char buffer[PATH_MAX];
-        if (fd == AT_FDCWD) {
-            char* cwd = getcwd(buffer, PATH_MAX);
-            std::string file = std::filesystem::path(cwd) / path;
-            removeRootfsPrefix(file);
-            resolve_me = file;
-        } else {
-            std::string self_fd = "/proc/self/fd/" + std::to_string(fd);
-            ssize_t size = readlink(self_fd.c_str(), buffer, PATH_MAX);
-            if (size < 0) {
-                WARN("Failed to read path for fd: %d and pathname %s", fd, path);
-                return {fd, path};
-            }
-            buffer[size] = 0;
-            std::string file = std::filesystem::path(buffer) / path;
-            removeRootfsPrefix(file);
-            resolve_me = file;
-        }
-    }
-
-    if (resolve_symlinks) {
-        // If we want to resolve symlinks anyway, then just resolve the entire thing in openat2
-        struct open_how open_how;
-        open_how.flags = O_PATH;
-        open_how.resolve = RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS;
-        open_how.mode = 0;
-        int path_fd = syscall(SYS_openat2, g_rootfs_fd, resolve_me.c_str(), &open_how, sizeof(struct open_how));
-        if (path_fd > 0) {
-            char buffer[PATH_MAX];
-            std::string self_fd = "/proc/self/fd/" + std::to_string(path_fd);
-            ssize_t size = readlink(self_fd.c_str(), buffer, PATH_MAX - 1);
-            ASSERT(size > 0);
-            buffer[size] = 0;
-            close(path_fd);
-            return {AT_FDCWD, std::filesystem::path{buffer}};
-        } else {
-            if (resolve_me.is_absolute()) {
-                return {AT_FDCWD, g_config.rootfs_path / resolve_me.relative_path()};
-            } else {
-                return {fd, resolve_me};
-            }
-        }
-    } else {
-        // If we don't want to resolve symlinks on the last component, resolve just the basepath then add the final component
-        const std::filesystem::path final_component = resolve_me.filename();
-        const std::filesystem::path base_path = resolve_me.parent_path();
-        struct open_how open_how;
-        open_how.flags = O_PATH;
-        open_how.resolve = RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS;
-        open_how.mode = 0;
-        int path_fd = syscall(SYS_openat2, g_rootfs_fd, base_path.c_str(), &open_how, sizeof(struct open_how));
-        if (path_fd > 0) {
-            char buffer[PATH_MAX];
-            std::string self_fd = "/proc/self/fd/" + std::to_string(path_fd);
-            ssize_t size = readlink(self_fd.c_str(), buffer, PATH_MAX - 1);
-            ASSERT(size > 0);
-            buffer[size] = 0;
-            close(path_fd);
-
-            std::filesystem::path final = buffer;
-            final /= final_component;
-            return {AT_FDCWD, final};
-        } else {
-            if (resolve_me.is_absolute()) {
-                return {AT_FDCWD, g_config.rootfs_path / resolve_me.relative_path()};
-            } else {
-                return {fd, resolve_me};
-            }
-        }
-    }
 }
