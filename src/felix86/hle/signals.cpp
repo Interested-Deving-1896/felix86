@@ -974,7 +974,8 @@ bool dispatch_guest(int sig, siginfo_t* info, void* ctx) {
 
     ASSERT(sig > 0);
 
-    SIGLOG("------- Guest signal %s (%d) %s TID: %d -------", sigdescr_np(sig), sig, in_jit_code ? "in jit code" : "not in jit code", gettid());
+    SIGLOG("------- Guest signal %s (%d) %s TID: %d, handler: %lx -------", sigdescr_np(sig), sig, in_jit_code ? "in jit code" : "not in jit code",
+           gettid(), handler->func);
 
     XmmReg* xmms;
 
@@ -1059,6 +1060,21 @@ bool dispatch_guest(int sig, siginfo_t* info, void* ctx) {
     // The only problem would be longjmps out of signal handlers. This is evil but possible that a game or something does it
     // In that case the frames would eventually overflow and at least we'd gave an appropriate message.
     state->recompiler->enterDispatcher(state);
+
+    if (state->exit_reason != EXIT_REASON_SIGRETURN) {
+        // Unwind all frames and exit
+        ASSERT(state->exit_reason == EXIT_REASON_EXIT_SYSCALL || state->exit_reason == EXIT_REASON_EXIT_GROUP_SYSCALL);
+        SIGLOG("Signal handler called %s", state->exit_reason == EXIT_REASON_EXIT_SYSCALL ? "exit" : "exit_group");
+#ifdef __riscv
+        ASSERT(state->first_frame);
+        u64* regs = get_regs(ctx);
+        regs[biscuit::a0.Index()] = state->first_frame;
+        set_pc(ctx, state->recompiler->getExitDispatcher()); // return immediately to exit dispatcher code
+        return true;
+#else
+        UNREACHABLE();
+#endif
+    }
 
     u64 new_rip = state->GetRip();
     if (in_jit_code) {

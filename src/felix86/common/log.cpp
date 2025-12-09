@@ -33,6 +33,10 @@ void Logger::startServer(bool detach) {
     int ok = mkfifo(g_pipe_name.c_str(), 0666);
     ASSERT(ok == 0);
 
+    // mkfifo uses umask to set the permissions, override them
+    ok = chmod(g_pipe_name.c_str(), 0666);
+    ASSERT(ok == 0);
+
     if (detach) {
         std::string message = "Started the log server in the background. Use `export __FELIX86_PIPE=";
         message += Logger::getPipeName();
@@ -75,13 +79,15 @@ void Logger::joinServer() {
     }
     g_output_fd = open(file, O_WRONLY, 0644);
     if (g_output_fd == -1) {
-        ERROR("Bad g_output_fd -- errno: %d -- pipe: %s", errno, file);
+        printf("Bad g_output_fd -- errno: %d -- pipe: %s", errno, file);
+        exit(1);
     }
     g_output_fd = FD::moveToHighNumber(g_output_fd);
     FD::protect(g_output_fd);
 
     // Also set this for when this process runs execve...
     g_pipe_name = file;
+    VERBOSE("felix86 PID %d joined log server at file %s", getpid(), file);
 }
 
 void Logger::serverLoop(int fd) {

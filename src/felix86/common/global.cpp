@@ -308,28 +308,31 @@ void initialize_globals() {
         ERROR("You selected the system root as the rootfs path, which is wrong");
     }
 
+    // TODO: pass in similar way as __FELIX86_CONFIG to children
     std::error_code ec;
-    const std::filesystem::path trusted_paths = Config::getConfigDir() / "trusted.txt";
-    if (std::filesystem::exists(trusted_paths, ec)) {
-        std::ifstream file(trusted_paths);
+    const std::filesystem::path config_dir = Config::getConfigDir();
+    if (!config_dir.empty()) {
+        const std::filesystem::path trusted_paths = config_dir / "trusted.txt";
+        if (std::filesystem::exists(trusted_paths, ec)) {
+            std::ifstream file(trusted_paths);
+            if (file.is_open()) {
+                std::string line;
+                bool all_ok = true;
+                while (std::getline(file, line)) {
+                    if (line.empty()) {
+                        continue;
+                    }
 
-        if (file.is_open()) {
-            std::string line;
-            bool all_ok = true;
-            while (std::getline(file, line)) {
-                if (line.empty()) {
-                    continue;
+                    bool ok = Filesystem::TrustFolder(line);
+                    if (!ok) {
+                        WARN("Failed to trust folder %s", line.c_str());
+                        all_ok = false;
+                    }
                 }
 
-                bool ok = Filesystem::TrustFolder(line);
-                if (!ok) {
-                    WARN("Failed to trust folder %s", line.c_str());
-                    all_ok = false;
+                if (!all_ok) {
+                    WARN("Failed to trust some folders. If they don't exist anymore, remove them from %s", trusted_paths.c_str());
                 }
-            }
-
-            if (!all_ok) {
-                WARN("Failed to trust some folders. If they don't exist anymore, remove them from %s", trusted_paths.c_str());
             }
         }
     }
