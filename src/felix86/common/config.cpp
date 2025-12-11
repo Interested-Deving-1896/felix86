@@ -1,3 +1,5 @@
+#include <filesystem>
+#include <system_error>
 #include <pwd.h>
 #include <sys/types.h>
 #include <toml.hpp>
@@ -100,6 +102,36 @@ std::filesystem::path Config::getConfigDir() {
     return config_path;
 }
 
+void addToEnvironment(Config& config, const char* env_name, const char* env) {
+    config.__environment += "\n";
+    config.__environment += env_name;
+    config.__environment += "=";
+    config.__environment += env;
+}
+
+template <typename T>
+std::string namify(const T& val);
+
+template <>
+std::string namify(const bool& val) {
+    return val ? "true" : "false";
+}
+
+template <>
+std::string namify(const u64& val) {
+    return fmt::format("{:x}", val);
+}
+
+template <>
+std::string namify(const std::filesystem::path& val) {
+    return val;
+}
+
+template <>
+std::string namify(const std::string& val) {
+    return val;
+}
+
 bool Config::initialize(bool ignore_envs) {
     const std::filesystem::path config_dir = getConfigDir();
     if (config_dir.empty()) {
@@ -137,11 +169,109 @@ bool Config::initialize(bool ignore_envs) {
         }
     }
 
+    std::error_code ec;
+    std::filesystem::path profiles_path = config_dir / "profiles";
+    std::filesystem::create_directories(profiles_path, ec);
+    
+    if (!std::filesystem::exists(profiles_path / "extreme.toml", ec)) {
+        // Enable all optimizations, even ones that may break programs
+        Config extreme_config{};
+        extreme_config.link = true;
+        extreme_config.address_cache = true;
+        extreme_config.unsafe_flags = true;
+        extreme_config.opcode_fusing = true;
+        extreme_config.inline_syscalls = true;
+        extreme_config.inaccurate_minmax = true;
+        extreme_config.always_tso = false;
+        extreme_config.protect_pages = true; // this one is too breaking to disable
+        extreme_config.noflag_opts = true;
+        extreme_config.auto_compress = false;
+        extreme_config.scan_ahead_multi = true;
+        extreme_config.pclmulqdq = true;
+        extreme_config.no_address_overflow = true;
+        Config::save(profiles_path / "extreme.toml", extreme_config, true);
+    }
+
+    if (!std::filesystem::exists(profiles_path / "safe.toml", ec)) {
+        // Disable most optimizations
+        Config safe_config{};
+        safe_config.link = true;
+        safe_config.address_cache = true;
+        safe_config.unsafe_flags = false;
+        safe_config.opcode_fusing = false;
+        safe_config.inline_syscalls = false;
+        safe_config.inaccurate_minmax = false;
+        safe_config.always_tso = true;
+        safe_config.protect_pages = true;
+        safe_config.noflag_opts = true;
+        safe_config.auto_compress = false;
+        safe_config.scan_ahead_multi = false;
+        safe_config.pclmulqdq = false;
+        safe_config.no_address_overflow = false;
+        Config::save(profiles_path / "safe.toml", safe_config, true);
+    }
+
+    if (!std::filesystem::exists(profiles_path / "paranoid.toml", ec)) {
+        // Disable all optimizations except block linking and enable some safety checks
+        Config paranoid_config{};
+        paranoid_config.paranoid = true;
+        paranoid_config.alignment_check = true;
+        paranoid_config.always_flags = true;
+        paranoid_config.link = true;
+        paranoid_config.address_cache = false;
+        paranoid_config.unsafe_flags = false;
+        paranoid_config.opcode_fusing = false;
+        paranoid_config.inline_syscalls = false;
+        paranoid_config.inaccurate_minmax = false;
+        paranoid_config.always_tso = true;
+        paranoid_config.protect_pages = true;
+        paranoid_config.noflag_opts = false;
+        paranoid_config.auto_compress = false;
+        paranoid_config.scan_ahead_multi = false;
+        paranoid_config.pclmulqdq = false;
+        paranoid_config.no_address_overflow = false;
+        Config::save(profiles_path / "paranoid.toml", paranoid_config, true);
+    }
+
     g_config = load(config_path, ignore_envs);
     g_config.config_path = config_path;
 
+    const char* profile = getenv("FELIX86_PROFILE");
+    if (profile) {
+        std::filesystem::path path;
+
+        // Sets either the absolute profile path or a name of a profile in $HOME/.config/felix86/profiles
+        if (profile[0] != '/') {
+            std::string sprofile = profile;
+            std::transform(sprofile.begin(), sprofile.end(), sprofile.begin(),
+                [](unsigned char c){ return std::tolower(c); });
+            path  = profiles_path / (sprofile + ".toml");
+        } else {
+            path = profile;
+        }
+
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec)) {
+            Config::loadProfile(g_config, path);
+        } else {
+            if (ec) {
+                WARN("Error while trying to access profile %s at %s", profile, path.c_str());
+            } else {
+                WARN("Profile %s doesn't exist at %s", profile, path.c_str());
+            }
+        }
+    }
+
+
     // g_config can be changed, c_initial_config won't be changed
     g_initial_config = g_config;
+
+#define X(group, type, name, default_value, env_name, description, required)                                                                         \
+        if (g_config.name != type{default_value}) {                                                                                                    \
+            addToEnvironment(g_config, #env_name, namify(g_config.name).c_str());                                                                        \
+        }
+#include "config.inc"
+#undef X
 
     return true;
 }
@@ -249,36 +379,6 @@ bool loadFromToml(const toml::value& toml, const char* group, const char* name, 
     return false;
 }
 
-void addToEnvironment(Config& config, const char* env_name, const char* env) {
-    config.__environment += "\n";
-    config.__environment += env_name;
-    config.__environment += "=";
-    config.__environment += env;
-}
-
-template <typename T>
-std::string namify(const T& val);
-
-template <>
-std::string namify(const bool& val) {
-    return val ? "true" : "false";
-}
-
-template <>
-std::string namify(const u64& val) {
-    return fmt::format("{:x}", val);
-}
-
-template <>
-std::string namify(const std::filesystem::path& val) {
-    return val;
-}
-
-template <>
-std::string namify(const std::string& val) {
-    return val;
-}
-
 template <typename Type>
 bool loadFromEnv(Config& config, Type& value, const char* env) {
     if constexpr (std::is_same_v<Type, bool>) {
@@ -370,9 +470,6 @@ Config Config::load(const std::filesystem::path& path, bool ignore_envs) {
                   "group [\"%s\"]",                                                                                                                  \
                   #name, #env_name, path.c_str(), #group);                                                                                           \
         }                                                                                                                                            \
-        if (config.name != type{default_value}) {                                                                                                    \
-            addToEnvironment(config, #env_name, namify(config.name).c_str());                                                                        \
-        }                                                                                                                                            \
     }
 #include "config.inc"
 #undef X
@@ -380,11 +477,28 @@ Config Config::load(const std::filesystem::path& path, bool ignore_envs) {
     return config;
 }
 
-void Config::save(const std::filesystem::path& path, const Config& config) {
-    toml::ordered_table toml;
+bool Config::loadProfile(Config& config, const std::filesystem::path& profile) {
+    auto attempt = toml::try_parse(profile);
+    if (attempt.is_err()) {
+        return false;
+    }
+
+    auto toml = attempt.unwrap();
 
 #define X(group, type, name, default_value, env_name, description, required)                                                                         \
     {                                                                                                                                                \
+        (void)loadFromToml<type>(toml, #group, #name, config.name);                                                                           \
+    }
+#include "config.inc"
+#undef X
+    return true;
+}
+
+void Config::save(const std::filesystem::path& path, const Config& config, bool only_non_default) {
+    toml::ordered_table toml;
+
+#define X(group, type, name, default_value, env_name, description, required)                                                                         \
+    if (!only_non_default || config.name != default_value) {                                                                                         \
         if (!toml.contains(#group)) {                                                                                                                \
             toml[#group] = toml::ordered_table{};                                                                                                    \
         }                                                                                                                                            \
