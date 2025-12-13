@@ -193,9 +193,9 @@ struct Recompiler {
 
     void invalidateBlock(BlockMetadata* block);
 
-    static void invalidateRangeGlobal(u64 start, u64 end);
+    static void invalidateRangeGlobal(u64 start, u64 end, const char* reason);
 
-    void invalidateRange(u64 start, u64 end);
+    int invalidateRange(u64 start, u64 end);
 
     constexpr static biscuit::GPR threadStatePointer() {
         return x27; // saved register so that when we exit VM we don't have to save it
@@ -513,6 +513,10 @@ struct Recompiler {
         ASSERT(isScratch(t4));
         as.LD(t4, offset, threadStatePointer());
         as.JALR(t4);
+    }
+
+    bool isRelocatable() {
+        return relocatable;
     }
 
     void pushCalltrace() {

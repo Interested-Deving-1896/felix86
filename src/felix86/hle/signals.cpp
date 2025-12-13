@@ -1,5 +1,7 @@
 #include <array>
+#include <cstring>
 #include <sys/mman.h>
+#include "felix86/common/config.hpp"
 #include "felix86/common/print.hpp"
 #include "felix86/common/state.hpp"
 #include "felix86/common/types.hpp"
@@ -803,7 +805,7 @@ bool handle_smc(ThreadState* current_state, siginfo_t* info, ucontext_t* context
 
     SMCLOG("Handling SMC on %lx during PC: %lx", info->si_addr, pc);
     u64 write_address = (u64)info->si_addr & ~0xFFFull;
-    Recompiler::invalidateRangeGlobal(write_address, write_address + 0x1000);
+    Recompiler::invalidateRangeGlobal(write_address, write_address + 1, "self-modifying code");
     ASSERT_MSG(::mprotect((void*)write_address, 0x1000, PROT_READ | PROT_WRITE) == 0, "mprotect failed on address %lx", write_address);
     return true;
 }
@@ -1111,6 +1113,10 @@ bool dispatch_guest(int sig, siginfo_t* info, void* ctx) {
 
 // Main signal handler function, all signals come here
 void signal_handler(int sig, siginfo_t* info, void* ctx) {
+    if (g_config.print_all_signals) {
+        SIGLOG("------- Signal %s -------", sigdescr_np(sig));
+    }
+
     // First, check if this is a host signal
     bool handled;
 
