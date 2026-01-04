@@ -17,6 +17,7 @@
 
 // TODO: benchmark to find best arrangement?
 constexpr static u64 MB = 1024 * 1024;
+constexpr static u64 GB = 1024 * 1024 * 1024;
 
 constexpr static u64 code_cache_sizes[] = {
     4 * MB,
@@ -82,37 +83,41 @@ static bool flag_passthrough(ZydisMnemonic mnemonic, x86_ref_e flag) {
     }
 }
 
-static u8* allocateCodeCache(size_t size) {
+void alignment_check_failed(void* rip) {
+    WARN("Unaligned atomic access at %lx", rip);
+}
+
+Recompiler::Recompiler(bool relocatable) : relocatable(relocatable) {
+    // Placing address cache near code cache allows us to access address cache with AUIPC+ADDI combo
+    size_t address_cache_size = (1 << address_cache_bits) * sizeof(AddressCacheEntry);
+    size_t size = max_code_cache_size + address_cache_size;
     // Try allocating code cache near program so that rip-relative immediates can be made in fewer instructions
     u64 min = std::min(g_executable_start, g_interpreter_start);
     void* address = MAP_FAILED;
     // If the program is allocated in 32-bit address space then it's not worth performing this optimization
     // as to not interfere with MAP_32BIT and because immediates can be made in 2 instructions
-    if (min > 4 * MB && !g_mode32) {
-        min += 256 * MB;
-        address = ::mmap((void*)min, max_code_cache_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        if (address == MAP_FAILED) {
-            WARN("Failed to allocate code cache near the program");
+    if (min > 5 * GB && !g_mode32) {
+        for (int i = 0; i < 4; i++) {
+            min -= 256 * MB;
+            address = ::mmap((void*)min, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+            if (address != MAP_FAILED) {
+                break;
+            }
         }
     }
     if (address == MAP_FAILED) {
-        address = ::mmap(nullptr, max_code_cache_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        WARN("Failed to allocate code cache near executable");
+        address = ::mmap(nullptr, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     }
     ASSERT_MSG(address != MAP_FAILED, "Failed to reserve code cache for thread %d?", gettid());
-    u8* first_chunk = (u8*)::mmap(address, code_cache_sizes[0], PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    ASSERT(first_chunk == address);
-    return first_chunk;
-}
+    u8* first_chunk = (u8*)::mmap((u8*)address + address_cache_size, code_cache_sizes[0], PROT_READ | PROT_WRITE | PROT_EXEC,
+                                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    ASSERT(first_chunk == (u8*)address + address_cache_size);
+    as = Assembler(first_chunk, max_code_cache_size);
 
-static void deallocateCodeCache(void* address) {
-    munmap(address, max_code_cache_size);
-}
+    address_cache = (AddressCacheEntry*)::mmap(address, address_cache_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    ASSERT(address_cache == address);
 
-void alignment_check_failed(void* rip) {
-    WARN("Unaligned atomic access at %lx", rip);
-}
-
-Recompiler::Recompiler(bool relocatable) : as(allocateCodeCache(code_cache_sizes[0]), max_code_cache_size), relocatable(relocatable) {
     if (g_config.auto_compress) {
         as.EnableOptimization(Optimization::AutoCompress);
     }
@@ -152,7 +157,8 @@ Recompiler::Recompiler(bool relocatable) : as(allocateCodeCache(code_cache_sizes
 }
 
 Recompiler::~Recompiler() {
-    deallocateCodeCache(as.GetBufferPointer(0));
+    munmap(address_cache, (1 << address_cache_bits) * sizeof(AddressCacheEntry));
+    munmap(as.GetBufferPointer(0), max_code_cache_size);
 }
 
 void Recompiler::emitNecessaryStuff() {
@@ -214,7 +220,11 @@ void Recompiler::emitDispatcher() {
         biscuit::GPR rip = scratch();
         biscuit::GPR ripreg = allocatedGPR(X86_REF_RIP);
         biscuit::Label not_equal;
-        as.LI(temp, (u64)address_cache.data());
+        u64 offset = (u64)address_cache - (u64)as.GetCursorPointer();
+        const auto hi20 = static_cast<int32_t>(((static_cast<uint32_t>(offset) + 0x800) >> 12) & 0xFFFFF);
+        const auto lo12 = static_cast<int32_t>(offset << 20) >> 20;
+        as.AUIPC(temp, hi20);
+        as.ADDI(temp, temp, lo12);
         as.SLLI(temp2, ripreg, 64 - address_cache_bits);
         // Multiply by 16, which is size of each address cache entry
         as.SRLI(temp2, temp2, 64 - address_cache_bits - 4);
@@ -371,7 +381,9 @@ void Recompiler::clearCodeCache(ThreadState* state) {
             block_metadata.clear();
             host_pc_map.clear();
             page_map.clear();
-            std::fill(std::begin(address_cache), std::end(address_cache), AddressCacheEntry{});
+            for (size_t i = 0; i < (1 << address_cache_bits); i++) {
+                address_cache[i] = AddressCacheEntry{};
+            }
 
             as.RewindBuffer();
             emitNecessaryStuff();
@@ -385,7 +397,9 @@ void Recompiler::clearCodeCache(ThreadState* state) {
         block_metadata.clear();
         host_pc_map.clear();
         page_map.clear();
-        std::fill(std::begin(address_cache), std::end(address_cache), AddressCacheEntry{});
+        for (size_t i = 0; i < (1 << address_cache_bits); i++) {
+            address_cache[i] = AddressCacheEntry{};
+        }
 
         as.RewindBuffer();
         emitNecessaryStuff();
