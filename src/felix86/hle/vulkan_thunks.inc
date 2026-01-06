@@ -212,6 +212,7 @@ EXT("libvulkan.so", vkCmdSetDepthWriteEnable, v_qd)
 KHR("libvulkan.so", vkCmdSetEvent2, v_qqq)
 EXT("libvulkan.so", vkCmdSetFrontFace, v_qd)
 EXT("libvulkan.so", vkCmdSetPrimitiveTopology, v_qd)
+EXT("libvulkan.so", vkCmdSetPrimitiveRestartEnable, v_qd)
 EXT("libvulkan.so", vkCmdSetRasterizerDiscardEnable, v_qd)
 EXT("libvulkan.so", vkCmdSetScissorWithCount, v_qdq)
 EXT("libvulkan.so", vkCmdSetStencilOp, v_qddddd)
@@ -272,6 +273,95 @@ X("libvulkan.so", vkGetPhysicalDeviceXcbPresentationSupportKHR, d_qdqq)
 // KHR Xlib
 X("libvulkan.so", vkCreateXlibSurfaceKHR, d_qqxq)
 X("libvulkan.so", vkGetPhysicalDeviceXlibPresentationSupportKHR, d_qdqq)
+
+// VK_EXT_descriptor_buffer
+X("libvulkan.so", vkCmdBindDescriptorBufferEmbeddedSamplersEXT, v_qdqd)
+X("libvulkan.so", vkCmdBindDescriptorBuffersEXT, v_qdq)
+X("libvulkan.so", vkCmdSetDescriptorBufferOffsetsEXT, v_qdqddqq)
+X("libvulkan.so", vkGetBufferOpaqueCaptureDescriptorDataEXT, d_qqq)
+X("libvulkan.so", vkGetDescriptorEXT, v_qqqq)
+X("libvulkan.so", vkGetDescriptorSetLayoutBindingOffsetEXT, v_qqdq)
+X("libvulkan.so", vkGetDescriptorSetLayoutSizeEXT, v_qqq)
+X("libvulkan.so", vkGetImageOpaqueCaptureDescriptorDataEXT, d_qqq)
+X("libvulkan.so", vkGetImageViewOpaqueCaptureDescriptorDataEXT, d_qqq)
+X("libvulkan.so", vkGetSamplerOpaqueCaptureDescriptorDataEXT, d_qqq)
+X("libvulkan.so", vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT, d_qqq)
+
+// VK_EXT_shader_module_identifier
+X("libvulkan.so", vkGetShaderModuleCreateInfoIdentifierEXT, v_qqq)
+X("libvulkan.so", vkGetShaderModuleIdentifierEXT, v_qqq)
+
+// VK_EXT_extended_dynamic_state2
+EXT("libvulkan.so", vkCmdSetLogicOp, v_qd)
+EXT("libvulkan.so", vkCmdSetPatchControlPoints, v_qd)
+
+// VK_EXT_extended_dynamic_state3
+EXT("libvulkan.so", vkCmdSetAlphaToCoverageEnable, v_qd)
+EXT("libvulkan.so", vkCmdSetAlphaToOneEnable, v_qd)
+EXT("libvulkan.so", vkCmdSetColorBlendEnable, v_qddq)
+EXT("libvulkan.so", vkCmdSetColorBlendEquation, v_qddq)
+EXT("libvulkan.so", vkCmdSetColorWriteMask, v_qddq)
+EXT("libvulkan.so", vkCmdSetDepthClampEnable, v_qddq)
+EXT("libvulkan.so", vkCmdSetLogicOpEnable, v_qd)
+EXT("libvulkan.so", vkCmdSetPolygonMode, v_qd)
+EXT("libvulkan.so", vkCmdSetRasterizationSamples, v_qd)
+EXT("libvulkan.so", vkCmdSetSampleMask, v_qdq)
+EXT("libvulkan.so", vkCmdSetColorBlendAdvanced, v_qddq)
+EXT("libvulkan.so", vkCmdSetConservativeRasterizationMode, v_qd)
+EXT("libvulkan.so", vkCmdSetExtraPrimitiveOverestimationSize, v_qF)
+EXT("libvulkan.so", vkCmdSetDepthClipNegativeOneToOne, v_qd)
+EXT("libvulkan.so", vkCmdSetDepthClipEnable, v_qd)
+EXT("libvulkan.so", vkCmdSetLineRasterizationMode, v_qd)
+EXT("libvulkan.so", vkCmdSetLineStippleEnable, v_qd)
+EXT("libvulkan.so", vkCmdSetProvokingVertexMode, v_qd)
+EXT("libvulkan.so", vkCmdSetSampleLocationsEnable, v_qd)
+EXT("libvulkan.so", vkCmdSetRasterizationStream, v_qd)
+EXT("libvulkan.so", vkCmdSetTessellationDomainOrigin, v_qd)
+
+// VK_EXT_depth_bias_control
+EXT("libvulkan.so", vkCmdSetDepthBias2, v_qq)
+
+// VK_EXT_sample_locations
+EXT("libvulkan.so", vkCmdSetSampleLocations, v_qq)
+EXT("libvulkan.so", vkGetPhysicalDeviceMultisampleProperties, v_qdq)
+
+// VK_EXT_transform_feedback
+EXT("libvulkan.so", vkCmdBeginQueryIndexed, v_qqddd)
+EXT("libvulkan.so", vkCmdBeginTransformFeedback, v_qddqq)
+EXT("libvulkan.so", vkCmdBindTransformFeedbackBuffers, v_qddqqq)
+EXT("libvulkan.so", vkCmdDrawIndirectByteCount, v_qddqqdd)
+EXT("libvulkan.so", vkCmdEndQueryIndexed, v_qqdd)
+EXT("libvulkan.so", vkCmdEndTransformFeedback, v_qddqq)
+
+// VK_EXT_multi_draw
+EXT("libvulkan.so", vkCmdDrawMulti, v_qdqddd)
+EXT("libvulkan.so", vkCmdDrawMultiIndexed, v_qdqdddq)
+
+// VK_EXT_hdr_metadata
+EXT("libvulkan.so", vkSetHdrMetadata, v_qdqq)
+
+// VK_KHR_swapchain_maintenance1
+KHR_EXT("libvulkan.so", vkReleaseSwapchainImages, d_qq)
+
+// VK_KHR_maintenance5
+KHR_EXT("libvulkan.so", vkCmdBindIndexBuffer2, v_qqqqd)
+KHR_EXT("libvulkan.so", vkGetDeviceImageSubresourceLayout, v_qqq)
+KHR_EXT("libvulkan.so", vkGetImageSubresourceLayout2, v_qqqq)
+KHR_EXT("libvulkan.so", vkGetRenderingAreaGranularity, v_qqq)
+
+// VK_KHR_maintenance6
+KHR("libvulkan.so", vkCmdBindDescriptorSets2, v_qq)
+KHR("libvulkan.so", vkCmdPushConstants2, v_qq)
+EXT("libvulkan.so", vkCmdBindDescriptorBufferEmbeddedSamplers2, v_qq)
+EXT("libvulkan.so", vkCmdSetDescriptorBufferOffsets2, v_qq)
+KHR("libvulkan.so", vkCmdPushDescriptorSet2, v_qq)
+KHR("libvulkan.so", vkCmdPushDescriptorSetWithTemplate2, v_qq)
+
+// VK_KHR_present_wait
+KHR("libvulkan.so", vkWaitForPresent, d_qqqq)
+
+// VK_KHR_line_rasterization
+KHR_EXT("libvulkan.so", vkCmdSetLineStipple, v_qdw)
 
 #undef KHR
 #undef EXT
