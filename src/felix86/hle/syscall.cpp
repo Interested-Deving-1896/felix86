@@ -210,6 +210,10 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
         result = SYSCALL(pidfd_getfd, arg1, arg2, arg3);
         break;
     }
+    case felix86_riscv64_pidfd_send_signal: {
+        result = SYSCALL(pidfd_send_signal, arg1, arg2, arg3, arg4);
+        break;
+    }
     case felix86_riscv64_setrlimit: {
         result = SYSCALL(setrlimit, arg1, arg2);
         break;
@@ -1898,6 +1902,18 @@ void felix86_syscall32(felix86_frame* frame, u32 rip_next) {
         switch (syscall_number) {
         case felix86_x86_32_alarm: {
             result = ::alarm(arg1);
+            break;
+        }
+        case felix86_x86_32_pidfd_send_signal: {
+            siginfo_t* host_siginfo_ptr = nullptr;
+            siginfo_t host_siginfo;
+            x86_siginfo_t* guest_siginfo_ptr = (x86_siginfo_t*)arg3;
+            if (guest_siginfo_ptr) {
+                host_siginfo = *guest_siginfo_ptr;
+                host_siginfo_ptr = &host_siginfo;
+            }
+
+            result = SYSCALL(pidfd_send_signal, arg1, arg2, host_siginfo_ptr, arg4);
             break;
         }
         case felix86_x86_32_vfork: {
