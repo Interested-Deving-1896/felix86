@@ -1,5 +1,6 @@
 #include <array>
 #include <span>
+#include <fcntl.h>
 #include "felix86/common/config.hpp"
 #include "felix86/common/log.hpp"
 #include "felix86/common/state.hpp"
@@ -81,8 +82,30 @@ constexpr u32 NO_SUBLEAF = 0xFFFFFFFF;
 
 std::span<const Cpuid> selected_mappings = nehalem_mappings;
 std::span<const Cpuid> selected_mappings_32 = p4_mappings_sse3;
+bool cpu_name_tried = false;
+bool cpu_name_set = false;
+char cpu_name[48];
+
+const char* get_version_full();
 
 Cpuid felix86_cpuid_impl(u32 leaf, u32 subleaf) {
+    // Try getting the CPU name
+    if (!cpu_name_tried) {
+        cpu_name_tried = true;
+        int fd = open("/proc/device-tree/cpus/cpu@0/model", O_RDONLY);
+        if (fd != -1) {
+            char buffer[48];
+            int bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+            if (bytes_read != -1) {
+                buffer[bytes_read] = 0;
+                std::string version = get_version_full();
+                snprintf(cpu_name, sizeof(cpu_name), "%s on %s", version.c_str(), buffer);
+                cpu_name_set = true;
+            }
+            ASSERT(close(fd) == 0);
+        }
+    }
+
     Cpuid result{};
     bool found = false;
 
@@ -120,6 +143,27 @@ Cpuid felix86_cpuid_impl(u32 leaf, u32 subleaf) {
 
     if (found && leaf == 0x8000'0001) {
         result.ecx |= (1 << 5); // lzcnt/popcnt support
+    }
+
+    if (found && leaf == 0x8000'0002 && cpu_name_set) {
+        result.eax = *(uint32_t*)(cpu_name + 0);
+        result.ebx = *(uint32_t*)(cpu_name + 4);
+        result.ecx = *(uint32_t*)(cpu_name + 8);
+        result.edx = *(uint32_t*)(cpu_name + 12);
+    }
+
+    if (found && leaf == 0x8000'0003 && cpu_name_set) {
+        result.eax = *(uint32_t*)(cpu_name + 16 + 0);
+        result.ebx = *(uint32_t*)(cpu_name + 16 + 4);
+        result.ecx = *(uint32_t*)(cpu_name + 16 + 8);
+        result.edx = *(uint32_t*)(cpu_name + 16 + 12);
+    }
+
+    if (found && leaf == 0x8000'0004 && cpu_name_set) {
+        result.eax = *(uint32_t*)(cpu_name + 32 + 0);
+        result.ebx = *(uint32_t*)(cpu_name + 32 + 4);
+        result.ecx = *(uint32_t*)(cpu_name + 32 + 8);
+        result.edx = *(uint32_t*)(cpu_name + 32 + 12);
     }
 
     if (!found) {
