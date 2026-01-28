@@ -363,5 +363,51 @@ KHR("libvulkan.so", vkWaitForPresent, d_qqqq)
 // VK_KHR_line_rasterization
 KHR_EXT("libvulkan.so", vkCmdSetLineStipple, v_qdw)
 
+// VK_KHR_calibrated_timestamps
+KHR_EXT("libvulkan.so", vkGetCalibratedTimestamps, d_qdqqq)
+KHR_EXT("libvulkan.so", vkGetPhysicalDeviceCalibrateableTimeDomains, d_qqq)
+
+// VK_EXT_debug_utils
+EXT("libvulkan.so", vkCmdBeginDebugUtilsLabel, v_qq)
+EXT("libvulkan.so", vkCmdEndDebugUtilsLabel, v_q)
+EXT("libvulkan.so", vkCmdInsertDebugUtilsLabel, v_qq)
+EXT("libvulkan.so", vkCreateDebugUtilsMessenger, d_qqxq)
+EXT("libvulkan.so", vkDestroyDebugUtilsMessenger, v_qqx)
+EXT("libvulkan.so", vkQueueBeginDebugUtilsLabel, v_qq)
+EXT("libvulkan.so", vkQueueEndDebugUtilsLabel, v_q)
+EXT("libvulkan.so", vkQueueInsertDebugUtilsLabel, v_qq)
+EXT("libvulkan.so", vkSetDebugUtilsObjectName, d_qq)
+EXT("libvulkan.so", vkSetDebugUtilsObjectTag, d_qq)
+EXT("libvulkan.so", vkSubmitDebugUtilsMessage, v_qddq)
+
+// VK_EXT_attachment_feedback_loop_dynamic_state
+EXT("libvulkan.so", vkCmdSetAttachmentFeedbackLoopEnable, v_qd)
+
+// VK_EXT_conditional_rendering
+EXT("libvulkan.so", vkCmdBeginConditionalRendering, v_qq)
+EXT("libvulkan.so", vkCmdEndConditionalRendering, v_q)
+
+// VK_KHR_external_memory_fd
+KHR("libvulkan.so", vkGetMemoryFd, d_qqq)
+KHR("libvulkan.so", vkGetMemoryFdProperties, d_qddq)
+
+// VK_KHR_push_descriptor
+KHR("libvulkan.so", vkCmdPushDescriptorSet, v_qdqddq)
+
+// VK_EXT_color_write_enable
+EXT("libvulkan.so", vkCmdSetColorWriteEnable, v_qdq)
+
+// VK_EXT_shader_object
+EXT("libvulkan.so", vkCmdBindShaders, v_qdqq)
+EXT("libvulkan.so", vkCreateShaders, d_qdqxq)
+EXT("libvulkan.so", vkDestroyShader, v_qqx)
+EXT("libvulkan.so", vkGetShaderBinaryData, d_qqqq)
+EXT("libvulkan.so", vkCmdSetVertexInput, v_qdqdq)
+
+// VK_EXT_external_memory_host
+EXT("libvulkan.so", vkGetMemoryHostPointerProperties, d_qdqq)
+
 #undef KHR
 #undef EXT
+#undef KHR_EXT
+#undef KHR_AMD
