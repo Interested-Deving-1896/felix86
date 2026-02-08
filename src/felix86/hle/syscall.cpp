@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <fmt/format.h>
 #include <linux/futex.h>
+#include <linux/seccomp.h>
 #include <linux/sem.h>
 #include <poll.h>
 #include <sched.h>
@@ -34,6 +35,7 @@
 #include "felix86/hle/ioctl32.hpp"
 #include "felix86/hle/ipc32.hpp"
 #include "felix86/hle/mmap.hpp"
+#include "felix86/hle/seccomp.hpp"
 #include "felix86/hle/signals.hpp"
 #include "felix86/hle/socket32.hpp"
 #include "felix86/hle/syscall.hpp"
@@ -721,6 +723,11 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
         result = SYSCALL(ftruncate, arg1, arg2, arg3, arg4, arg5, arg6);
         break;
     }
+    case felix86_riscv64_truncate: {
+        SignalGuard guard;
+        result = Filesystem::Truncate((char*)arg1, arg2);
+        break;
+    }
     case felix86_riscv64_read: {
         result = SYSCALL(read, arg1, arg2, arg3, arg4, arg5, arg6);
         break;
@@ -928,9 +935,27 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
         break;
     }
     case felix86_riscv64_seccomp: {
-        WARN("This app uses seccomp");
-        // We don't implement this... yet
-        result = -EINVAL;
+        switch (arg1) {
+        case SECCOMP_SET_MODE_STRICT: {
+            WARN("seccomp(SECCOMP_SET_MODE_STRICT)");
+            result = -EINVAL;
+            break;
+        }
+        case SECCOMP_SET_MODE_FILTER: {
+            if (!Seccomp::setFilter(arg2, (void*)arg3, 0)) {
+                WARN("Seccomp::setFilter failed");
+                result = -EINVAL;
+            } else {
+                result = 0;
+            }
+            break;
+        }
+        default: {
+            WARN("seccomp(%x)", arg1);
+            result = -EINVAL;
+            break;
+        }
+        }
         break;
     }
     case felix86_riscv64_socket: {
@@ -1277,8 +1302,17 @@ Result felix86_syscall_common(felix86_frame* frame, int rv_syscall, u64 arg1, u6
         }
         case PR_SET_SECCOMP:
         case PR_GET_SECCOMP: {
-            WARN("prctl(SECCOMP) not implemented");
-            result = -EINVAL;
+            if (option == PR_SET_SECCOMP && arg2 == SECCOMP_MODE_FILTER) {
+                if (!Seccomp::setFilter(0, (void*)arg3, 0)) {
+                    WARN("Seccomp::setFilter failed");
+                    result = -EINVAL;
+                } else {
+                    result = 0;
+                }
+            } else {
+                WARN("prctl(SECCOMP, %d) not implemented", arg2);
+                result = -EINVAL;
+            }
             break;
         }
         default: {
