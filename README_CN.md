@@ -1,4 +1,4 @@
-[English](./README.md) | [网站](https://felix86.com)
+[English](./README.md) | [网站](https://felix86.com) | **[Discord](https://discord.gg/TgBxgFwByU)**
 
 # felix86
 
@@ -15,14 +15,12 @@ bash <(curl -s https://install.felix86.com)
 
 该命令将下载并执行脚本，自动安装 felix86 及您选择的根文件系统。
 
-[阅读使用指南](./docs/how-to-use.md) 获取更多信息。
-
-开发者请参阅[贡献指南](./docs/contributing.md)。
+用户和开发者文档请参阅：https://felix86.com/docs
 
 欢迎加入我们的**Discord服务器**：[https://discord.gg/TgBxgFwByU](https://discord.gg/TgBxgFwByU)
 
 ## 核心特性
-- 准时 (JIT) 重编译器
+- 即时 (JIT) 重编译器
 - 采用RISC-V向量扩展实现SSE 4.2级指令集
 - 支持`B`、`Zicond`、`Zacas`等多项标准扩展
 - 兼容各类自定义扩展
